@@ -5,6 +5,7 @@
 #include "sensor_msgs/msg/image.hpp"
 
 #include <cv_bridge/cv_bridge.hpp>
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 #include "System.h"
 #include "Frame.h"
@@ -12,6 +13,7 @@
 #include "Tracking.h"
 
 #include "utility.hpp"
+
 
 class MonocularSlamNode : public rclcpp::Node
 {
@@ -30,6 +32,9 @@ private:
     cv_bridge::CvImagePtr m_cvImPtr;
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
+
+    // 新增：位姿发布者
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr m_pose_publisher;
 };
 
 #endif
