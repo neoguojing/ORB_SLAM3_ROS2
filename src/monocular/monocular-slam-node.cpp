@@ -77,6 +77,15 @@ void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
 
         // 5. 发布消息
         m_pose_publisher->publish(pose_msg);
-        std::cout << "Published new SLAM pose." << pose_msg << std::endl;
+        std::cout << "Published new SLAM pose: "
+          << "Time: " << pose_msg.header.stamp.sec << "." << pose_msg.header.stamp.nanosec
+          << " | Pos: [" << pose_msg.pose.position.x << ", " 
+                         << pose_msg.pose.position.y << ", " 
+                         << pose_msg.pose.position.z << "]"
+          << " | Quat: [" << pose_msg.pose.orientation.x << ", "
+                          << pose_msg.pose.orientation.y << ", "
+                          << pose_msg.pose.orientation.z << ", "
+                          << pose_msg.pose.orientation.w << "]"
+          << std::endl;
     }
 }
