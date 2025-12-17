@@ -46,10 +46,9 @@ void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
 
     std::cout<<"one frame has been sent"<<std::endl;
     
-    ORB_SLAM3::Tracking::eTrackingState state = 
-        m_SLAM->TrackMonocular(m_cvImPtr->image, Utility::StampToSec(msg->header.stamp));
+    cv::Mat Tcw = m_SLAM->TrackMonocular(m_cvImPtr->image, Utility::StampToSec(msg->header.stamp));
     // 只有在跟踪成功时才发布位姿
-    if (state == ORB_SLAM3::Tracking::OK)
+    if (!Tcw.empty())
     {
         // 1. 从 SLAM 系统获取当前相机位姿 (Tcw)
         cv::Mat Tcw = m_SLAM->GetLastFrame().GetPose();
