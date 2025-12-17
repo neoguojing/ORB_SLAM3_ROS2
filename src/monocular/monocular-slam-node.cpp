@@ -77,6 +77,6 @@ void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
 
         // 5. 发布消息
         m_pose_publisher->publish(pose_msg);
-        std::cout << "Published new SLAM pose." << std::endl;
+        std::cout << "Published new SLAM pose." << pose_msg << std::endl;
     }
 }
