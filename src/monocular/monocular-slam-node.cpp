@@ -46,26 +46,36 @@ void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
 
     std::cout<<"one frame has been sent"<<std::endl;
     
-    cv::Mat Tcw = m_SLAM->TrackMonocular(m_cvImPtr->image, Utility::StampToSec(msg->header.stamp));
-    // 只有在跟踪成功时才发布位姿
-    if (!Tcw.empty())
-    {
-        // 1. 从 SLAM 系统获取当前相机位姿 (Tcw)
-        cv::Mat Tcw = m_SLAM->GetLastFrame().GetPose();
-        
-        // ORB-SLAM3 返回的是 T_cw (相机到世界)，但 ROS 需要 T_wc (世界到相机)，所以需要求逆
-        cv::Mat Twc = Tcw.inv();
+    // 1. 获取位姿 (返回的是 Sophus::SE3f)
+    Sophus::SE3f Tcw = m_SLAM->TrackMonocular(m_cvImPtr->image, Utility::StampToSec(msg->header.stamp));
 
-        // 2. 将 cv::Mat 转换为 ROS 2 位姿消息
+    // 2. 检查跟踪状态
+    // 注意：Tcw 本身不代表状态，需调用 GetTrackingState()
+    if (m_SLAM->GetTrackingState() == ORB_SLAM3::Tracking::OK)
+    {
+        // 3. 获取逆变换 (相机到世界 -> 世界到相机)
+        // Twc 表示相机在世界坐标系中的位姿
+        Sophus::SE3f Twc = Tcw.inverse();
+
+        // 4. 填充 ROS 2 消息
         geometry_msgs::msg::PoseStamped pose_msg;
         pose_msg.header = msg->header;
-        pose_msg.header.frame_id = "map"; // 世界坐标系
-        
-        // 确保使用正确的消息类型，这里使用 utility.hpp 中可能包含的转换函数
-        // 如果没有，需要自己实现 cv::Mat 到 Pose 的转换逻辑
-        Utility::cvMatToPoseMsg(Twc, pose_msg.pose);
-        
-        // 3. 发布消息
+        pose_msg.header.frame_id = "map";
+
+        // 提取平移 (Translation)
+        Eigen::Vector3f trans = Twc.translation();
+        pose_msg.pose.position.x = trans.x();
+        pose_msg.pose.position.y = trans.y();
+        pose_msg.pose.position.z = trans.z();
+
+        // 提取旋转并转换为四元数 (Quaternion)
+        Eigen::Quaternionf q(Twc.unit_quaternion());
+        pose_msg.pose.orientation.x = q.x();
+        pose_msg.pose.orientation.y = q.y();
+        pose_msg.pose.orientation.z = q.z();
+        pose_msg.pose.orientation.w = q.w();
+
+        // 5. 发布消息
         m_pose_publisher->publish(pose_msg);
         std::cout << "Published new SLAM pose." << std::endl;
     }
