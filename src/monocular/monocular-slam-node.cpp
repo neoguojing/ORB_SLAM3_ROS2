@@ -89,3 +89,42 @@ void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
           << std::endl;
     }
 }
+
+
+void MonocularSlamNode::PublishMapPoints()
+{
+    // 1. 获取所有地图点
+    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetTrackedMapPoints(); // 只获取当前看到的点，或者使用 GetAllMapPoints()
+    if (vpMapPoints.empty()) return;
+
+    auto cloud_msg = sensor_msgs::msg::PointCloud2();
+    cloud_msg.header.stamp = this->now();
+    cloud_msg.header.frame_id = "map"; // 地图点是在 map 坐标系下的
+
+    // 2. 设置点云格式（x, y, z）
+    sensor_msgs::PointCloud2Modifier modifier(cloud_msg);
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+    modifier.resize(vpMapPoints.size());
+
+    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+
+    for (auto pMP : vpMapPoints) {
+        if (!pMP || pMP->isBad()) continue;
+
+        Eigen::Vector3f pos = pMP->GetWorldPos();
+
+        // 3. 坐标系转换 (OpenCV -> ROS)
+        // ORB-SLAM3: x-right, y-down, z-forward
+        // ROS: x-forward, y-left, z-up
+        // 转换逻辑取决于你发布 TF 时的变换，通常如下：
+        *iter_x = pos.z();  // ROS x = SLAM z
+        *iter_y = -pos.x(); // ROS y = -SLAM x
+        *iter_z = -pos.y(); // ROS z = -SLAM y
+
+        ++iter_x; ++iter_y; ++iter_z;
+    }
+
+    m_cloud_publisher->publish(cloud_msg);
+}

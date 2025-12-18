@@ -31,10 +31,14 @@ private:
 
     cv_bridge::CvImagePtr m_cvImPtr;
 
+    // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
 
     // 新增：位姿发布者
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr m_pose_publisher;
+    // 地图发布
+    void PublishMapPoints();
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_cloud_publisher;
 };
 
 #endif
