@@ -1,8 +1,9 @@
 # 设置变量 (请根据实际路径修改，或者通过环境变量传入)
 ORB_ROOT ?= $(ORBSLAM3_ROOT_DIR)
-WS_PATH   = $(ORB_ROOT)/../orbslam3
+PROJECT_ROOT := $(shell pwd)
+WS_PATH   = $(PROJECT_ROOT)
 VOC_PATH  = $(ORB_ROOT)/Vocabulary/ORBvoc.txt
-YAML_PATH = $(ORB_ROOT)/Examples/Monocular/TUM1.yaml
+YAML_PATH = $(PROJECT_ROOT)/config/monocular/EuRoC.yaml
 
 # 默认指令：编译
 all: build
