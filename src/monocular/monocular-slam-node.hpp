@@ -5,6 +5,7 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "sensor_msgs/point_cloud2_iterator.hpp"
 #include <cv_bridge/cv_bridge.hpp>
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -59,6 +60,7 @@ private:
     // 坐标系转换常量 (相机系 -> ROS 机器人系)
     // 根据 REP-103 标准进行轴映射
     Eigen::Matrix3f m_R_vis_ros;
+    int m_frame_count = 0;
 };
 
 #endif
