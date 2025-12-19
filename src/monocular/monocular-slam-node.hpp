@@ -42,21 +42,16 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_publisher;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_cloud_publisher;
     std::unique_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
-
-    // 地图发布
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_cloud_publisher;
     
     ORB_SLAM3::System* m_SLAM;
 
-    cv_bridge::CvImagePtr m_cvImPtr;
-
     cv::Ptr<cv::CLAHE> m_clahe;
 
+
+    cv_bridge::CvImagePtr m_cvImPtr;
     // --- IMU 缓冲区与同步逻辑 ---
     std::mutex m_mutex_imu;
     std::vector<ORB_SLAM3::IMU::Point> m_imu_buffer;
-    double m_last_image_time = -1.0;
-
     // 坐标系转换常量 (相机系 -> ROS 机器人系)
     // 根据 REP-103 标准进行轴映射
     Eigen::Matrix3f m_R_vis_ros;

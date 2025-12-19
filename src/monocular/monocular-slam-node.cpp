@@ -40,6 +40,12 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
     // --- 4. 初始化 CLAHE 优化器 (之前讨论的优化) ---
     m_clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
 
+    // 1. 初始化坐标变换矩阵 (m_R_vis_ros)
+    // 根据上述映射逻辑填充矩阵
+    m_R_vis_ros << 0, 0, 1,  // ROS X = CV Z
+                  -1, 0, 0,  // ROS Y = -CV X
+                   0,-1, 0;  // ROS Z = -CV Y
+
     RCLCPP_INFO(this->get_logger(), "ORB-SLAM3 节点初始化完成，等待传感器数据...");
 }
 
@@ -117,19 +123,12 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
     Eigen::Vector3f p_cv = Twc.translation();
     Eigen::Matrix3f R_cv = Twc.rotationMatrix();
 
-    // 2. 定义坐标轴映射矩阵 (视觉系 -> ROS 机器人系)
-    // 根据你的要求映射: ROS_X=SLAM_Z, ROS_Y=-SLAM_X, ROS_Z=-SLAM_Y
-    Eigen::Matrix3f R_v2r;
-    R_v2r << 0, 0, 1,  // ROS_X 轴对应 SLAM 的 Z
-            -1, 0, 0,  // ROS_Y 轴对应 SLAM 的 -X
-             0,-1, 0;  // ROS_Z 轴对应 SLAM 的 -Y
-
     // 3. 变换平移向量
-    Eigen::Vector3f p_ros = R_v2r * p_cv;
+    Eigen::Vector3f p_ros = m_R_vis_ros * p_cv;
 
     // 4. 变换旋转矩阵
     // 公式: R_new = R_v2r * R_old * R_v2r.transpose()
-    Eigen::Matrix3f R_ros = R_v2r * R_cv * R_v2r.transpose();
+    Eigen::Matrix3f R_ros = m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
     Eigen::Quaternionf q_ros(R_ros);
     q_ros.normalize();
 
