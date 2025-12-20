@@ -28,10 +28,14 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
     // --- 3. 初始化订阅者 ---
     // 图像和 IMU 建议使用传感器专用的 QoS (Best Effort / Sensor Data)
     auto sensor_qos = rclcpp::SensorDataQoS();
-
+    sensor_qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE); 
     m_image_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-        "/camera/image_raw", sensor_qos,
+        "/camera/image_raw", 10,
         std::bind(&MonocularSlamNode::GrabImage, this, std::placeholders::_1));
+    
+    m_compress_image_subscriber = this->create_subscription<sensor_msgs::msg::CompressedImage>(
+        "/camera/image_raw/compressed", 10,
+        std::bind(&MonocularSlamNode::GrabCompressedImage, this, std::placeholders::_1));
 
     m_imu_subscriber = this->create_subscription<sensor_msgs::msg::Imu>(
         "/imu/data_raw", sensor_qos,
@@ -69,11 +73,33 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
     ));
 }
 
+void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
+    try {
+        // 解码压缩图像
+        ProcessImage(cv_bridge::toCvCopy(msg, "mono8")->image, msg->header.stamp);
+    } catch (cv_bridge::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+    }
+}
 
-void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg)
+void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg){
+    try {
+        // toCvShare 可以减少内存拷贝，提高效率
+        ProcessImage(cv_bridge::toCvShare(msg, "mono8")->image, msg->header.stamp);
+    } catch (cv_bridge::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+    }
+}
+
+void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stamp)
 {
-    double t_image = Utility::StampToSec(msg->header.stamp);
-    
+    // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+        "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
+        Utility::StampToSec(stamp), im.cols, im.rows);
+
+    double t_image = Utility::StampToSec(stamp);
+
     // 1. 提取缓冲区中所有早于当前图像时间的 IMU 数据
     std::vector<ORB_SLAM3::IMU::Point> vImuMeas;
     {
@@ -92,32 +118,62 @@ void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg)
         }
     }
 
-    // 2. 图像预处理 (CLAHE 等)
-    // cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, "mono8");
-    cv::Mat im;
-    try {
-        im = cv_bridge::toCvCopy(msg, "mono8")->image;
-    } catch (cv_bridge::Exception& e) {
-        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-        return;
+    cv::Mat im_gray = im;
+
+    // 1. 如果输入是彩色图，转换为灰度图 (ORB-SLAM3 核心要求)
+    if (im_gray.channels() == 3) {
+        cv::cvtColor(im_gray, im_gray, cv::COLOR_BGR2GRAY);
     }
+
     // 这里可以加入你 main 里的 clahe->apply(...)
-    m_clahe->apply(im, im);
+    m_clahe->apply(im_gray, im_gray);
 
     // 3. 核心调用：单目惯性跟踪
-    // 对应 main 中的 SLAM.TrackMonocular(im, tframe, vImuMeas)
-    Sophus::SE3f Tcw = m_SLAM->TrackMonocular(im, t_image, vImuMeas);
+    // --- DEBUG 打印 4: SLAM 开始执行（记录耗时） ---
+    auto t1 = std::chrono::high_resolution_clock::now();
+    // 3. 核心调用：根据是否有 IMU 数据选择调用接口
+    Sophus::SE3f Tcw;
+
+    if (vImuMeas.empty()) {
+        // 如果没有 IMU 数据，调用纯单目接口
+        // 注意：如果你的系统初始化为 IMU_MONOCULAR，传空可能会报错或依然不就绪
+        Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
+    } else {
+        // 只有有数据时才调用惯性接口
+        // Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vImuMeas);
+        Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
+    }
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
 
     // 4. 检查状态并发布
-    if (m_SLAM->GetTrackingState() == ORB_SLAM3::Tracking::OK) {
-        PublishData(Tcw, msg->header.stamp);
+    int state = m_SLAM->GetTrackingState();
+    
+    // --- DEBUG 打印 5: SLAM 结果 ---
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+        "SLAM 跟踪状态: %d (9=OK), 耗时: %.4f 秒", state, elapsed);
+
+    // 4. 检查状态并发布
+    if (state == ORB_SLAM3::Tracking::OK) {
+        PublishData(Tcw, stamp);
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) PublishMapPoints();
+    } else if (state == ORB_SLAM3::Tracking::LOST) {
+        RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", state);
+    } else if (state == ORB_SLAM3::Tracking::NOT_INITIALIZED) {
+        // 单目 SLAM 必须先初始化
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
+            "SLAM 尚未初始化:%d，请缓慢移动相机以产生视差...", state);
     }
 }
 
 void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp)
 {
+    // --- DEBUG 打印 1: 进入发布函数 ---
+    // 使用 THROTTLE 避免日志刷屏，每 1 秒输出一次
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose and TF...");
+
     // 1. 获取相机在 SLAM 世界系下的位姿 (Twc)
     Sophus::SE3f Twc = Tcw.inverse();
     Eigen::Vector3f p_cv = Twc.translation();
@@ -131,6 +187,16 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
     Eigen::Matrix3f R_ros = m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
     Eigen::Quaternionf q_ros(R_ros);
     q_ros.normalize();
+
+    // --- DEBUG 打印 2: 坐标数值校验 ---
+    // 检查平移是否超出了合理范围（比如超过了 100米），有助于发现初始化失败的情况
+    if (p_ros.norm() > 100.0) {
+        RCLCPP_WARN(this->get_logger(), "Warning: Pose seems too large! Dist: %.2f m", p_ros.norm());
+    }
+
+    // 打印当前位姿 (ROS 坐标系)
+    RCLCPP_DEBUG(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
+                 p_ros.x(), p_ros.y(), p_ros.z(), q_ros.x(), q_ros.y(), q_ros.z(), q_ros.w());
 
     // 5. 填充并发布 PoseStamped 消息
     geometry_msgs::msg::PoseStamped pose_msg;
@@ -173,6 +239,13 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
     // 注意：单目 SLAM 很难提供准确的速度 twist，
     // 如果没有融合 IMU 计算出的速度，此处 twist 建议保持默认(0)
     m_odom_publisher->publish(odom_msg);
+
+    // --- DEBUG 打印 3: 循环计数 ---
+    static int pub_count = 0;
+    pub_count++;
+    if(pub_count % 10 == 0) {
+        RCLCPP_INFO(this->get_logger(), "Successfully published %d poses.", pub_count);
+    }
 }
 
 

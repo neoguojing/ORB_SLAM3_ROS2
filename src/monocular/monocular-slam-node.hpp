@@ -3,6 +3,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
@@ -30,7 +31,11 @@ public:
 private:
     using ImageMsg = sensor_msgs::msg::Image;
 
+    void ProcessImage(const cv::Mat& im, const rclcpp::Time& stamp);
+
     void GrabImage(const sensor_msgs::msg::Image::SharedPtr msg);
+    void GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg);
+
     void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg);
 
     // --- 数据处理与发布 ---
@@ -39,6 +44,7 @@ private:
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
+    rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr m_compress_image_subscriber;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr m_imu_subscriber;
 
     // --- 发布者 ---
