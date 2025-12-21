@@ -76,7 +76,8 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
 void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     try {
         // 解码压缩图像
-        ProcessImage(cv_bridge::toCvCopy(msg, "mono8")->image, msg->header.stamp);
+        // ProcessImage(cv_bridge::toCvShare(msg, "mono8")->image, msg->header.stamp);
+        ProcessImage(cv_bridge::toCvShare(msg, "rgb8")->image, msg->header.stamp);
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     }
@@ -85,7 +86,8 @@ void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedIm
 void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg){
     try {
         // toCvShare 可以减少内存拷贝，提高效率
-        ProcessImage(cv_bridge::toCvShare(msg, "mono8")->image, msg->header.stamp);
+        // ProcessImage(cv_bridge::toCvShare(msg, "mono8")->image, msg->header.stamp);
+        ProcessImage(cv_bridge::toCvShare(msg, "rgb8")->image, msg->header.stamp);
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     }
@@ -124,9 +126,9 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     cv::Mat im_gray = im;
 
     // 1. 如果输入是彩色图，转换为灰度图 (ORB-SLAM3 核心要求)
-    if (im_gray.channels() == 3) {
-        cv::cvtColor(im_gray, im_gray, cv::COLOR_BGR2GRAY);
-    }
+    // if (im_gray.channels() == 3) {
+    //     cv::cvtColor(im_gray, im_gray, cv::COLOR_BGR2GRAY);
+    // }
 
     // 这里可以加入你 main 里的 clahe->apply(...)
     m_clahe->apply(im_gray, im_gray);
