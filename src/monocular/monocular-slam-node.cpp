@@ -76,8 +76,8 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
 void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     try {
         // 解码压缩图像
-        // ProcessImage(cv_bridge::toCvShare(msg, "mono8")->image, msg->header.stamp);
-        ProcessImage(cv_bridge::toCvShare(msg, "rgb8")->image, msg->header.stamp);
+        // ProcessImage(cv_bridge::toCvCopy(msg, "mono8")->image, msg->header.stamp);
+        ProcessImage(cv_bridge::toCvCopy(msg, "rgb8")->image, msg->header.stamp);
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     }
@@ -131,7 +131,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     // }
 
     // 这里可以加入你 main 里的 clahe->apply(...)
-    m_clahe->apply(im_gray, im_gray);
+    // m_clahe->apply(im_gray, im_gray);
 
     // 3. 核心调用：单目惯性跟踪
     // --- DEBUG 打印 4: SLAM 开始执行（记录耗时） ---
