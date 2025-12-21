@@ -38,7 +38,7 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
         std::bind(&MonocularSlamNode::GrabCompressedImage, this, std::placeholders::_1));
 
     m_imu_subscriber = this->create_subscription<sensor_msgs::msg::Imu>(
-        "/imu/data_raw", sensor_qos,
+        "/imu/data_raw", 10,
         std::bind(&MonocularSlamNode::GrabImu, this, std::placeholders::_1));
 
     // --- 4. 初始化 CLAHE 优化器 (之前讨论的优化) ---
@@ -93,6 +93,9 @@ void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg){
 
 void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stamp)
 {
+    // auto avg = cv::mean(im);
+    // RCLCPP_INFO(this->get_logger(), "图像均值: %.2f", avg[0]);
+
     // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
         "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
@@ -143,6 +146,16 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         // Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vImuMeas);
         Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
     }
+
+    if(Tcw.matrix().isZero()) {
+        // 如果返回的是空位姿，说明这一帧在预处理阶段就被丢弃了
+        RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", Tcw.matrix().isZero());
+        return;
+    }
+
+    // 获取当前帧的特征点数量（需要包含对应的头文件）
+    int nFeatures = m_SLAM->GetTrackedKeyPointsUn().size(); 
+    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前帧提取到的特征点数: %d", nFeatures);
 
     auto t2 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
