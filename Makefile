@@ -34,4 +34,12 @@ info:
 	@echo "Vocabulary: $(VOC_PATH)"
 	@echo "Config YAML: $(YAML_PATH)"
 
+# 4. 运行 EKF 融合节点
+run_ekf:
+	ros2 run robot_localization ekf_node --ros-args --params-file ./config/ekf.yaml
+
+# 5. 同时查看 TF 树状态
+view_tf:
+	ros2 run tf2_tools view_frames
+
 .PHONY: all build run_mono clean info

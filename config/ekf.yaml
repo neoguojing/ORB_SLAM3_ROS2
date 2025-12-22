@@ -1,0 +1,116 @@
+ekf_filter_node:
+  ros__parameters:
+    # --- 基础设置 ---
+
+    # 滤波器输出位置估计的频率 (Hz)。
+    # 注意：在收到至少一个传感器消息之前，滤波器不会开始计算。
+    frequency: 30.0
+
+    # 传感器超时时间 (秒)。如果超过此时间没收到传感器数据，
+    # 滤波器将只进行“预测”步骤而不进行“校正”。
+    sensor_timeout: 0.1
+
+    # 2D 模式。如果设为 true，则忽略 Z 轴、Roll 和 Pitch 变化。
+    # 适用于在平坦地面运行的机器人，可防止由于 IMU 噪声引起的虚假 Z 轴漂移。
+    two_d_mode: true
+
+    # TF 变换的时间偏移量。通常设为 0.0。
+    transform_time_offset: 0.0
+
+    # TF 监听器等待变换可用的超时时间。
+    transform_timeout: 0.0
+
+    # 是否打印诊断信息。建议设为 true，可通过 /diagnostics_agg 查看节点状态。
+    print_diagnostics: true
+
+    # 调试模式。会输出大量的矩阵运算信息到指定文件，极其影响性能，生产环境下请关闭。
+    debug: false
+    debug_out_file: /path/to/debug/file.txt
+
+    # 是否发布加速度状态。
+    publish_acceleration: false
+
+    # 是否广播 TF 变换 (通常是 odom -> base_link)。
+    publish_tf: true
+
+    # --- 坐标系设置 (遵循 REP-105 标准) ---
+
+    map_frame: map              # 全局地图坐标系 (固定)
+    odom_frame: odom            # 里程计坐标系 (固定，但会有累积误差)
+    base_link_frame: base_link  # 机器人本体坐标系 (随车移动)
+    
+    # world_frame 决定了 EKF 发布的 TF 链条：
+    # 1. 如果 world_frame = odom，EKF 发布 odom -> base_link (融合轮速和 IMU)。
+    # 2. 如果 world_frame = map，EKF 发布 map -> base_link (通常用于融合 GPS 或全局定位)。
+    world_frame: odom
+
+    # --- 传感器输入配置 (里程计 odom0) ---
+
+    # 话题名称
+    odom0: example/odom
+
+    # 变量配置矩阵。顺序为：
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # true 表示该变量参与 EKF 融合，false 表示忽略。
+    odom0_config: [true,  true,  false, # 融合位置 X, Y
+                    false, false, false, # 忽略位置 Z, R, P
+                    false, false, false, # 忽略速度 vx, vy, vz
+                    false, false, true,  # 融合角速度 vyaw (Yaw rate)
+                    false, false, false] # 忽略加速度
+
+    odom0_queue_size: 2
+
+    # [高级] 微分模式。如果设为 true，则将绝对位置转换为速度进行积分，防止多个定位源跳变。
+    odom0_differential: false
+
+    # [高级] 相对模式。如果设为 true，则将收到的第一个数据设为 (0,0,0) 原点。
+    odom0_relative: false
+
+    # 离群点检测阈值 (马氏距离)。如果数据跳变过大，则会被滤掉。
+    odom0_pose_rejection_threshold: 5.0
+    odom0_twist_rejection_threshold: 1.0
+
+    # --- 传感器输入配置 (惯性测量单元 imu0) ---
+
+    imu0: /imu/data_raw
+
+    # 变量配置。通常 IMU 融合：Roll, Pitch, Yaw, 角速度, 线加速度
+    imu0_config: [false, false, false,
+                  false,  false,  true,  # 融合姿态 R, P, Y
+                  false, false, false,
+                  false,  false,  true,  # 融合角速度
+                  true,  false,  false]  # 融合线加速度
+    
+    imu0_differential: false
+    imu0_relative: true
+    imu0_queue_size: 5
+    
+    # [高级] 是否自动移除重力加速度。如果你的 IMU 驱动本身不处理重力，请设为 true。
+    imu0_remove_gravitational_acceleration: true
+
+    # --- 控制输入配置 (cmd_vel) ---
+
+    # 是否在预测步骤中使用控制指令 (cmd_vel)。
+    use_control: true
+    stamped_control: true
+    control_timeout: 0.2
+    
+    # 控制指令控制哪些维度。顺序：vx, vy, vz, vroll, vpitch, vyaw
+    control_config: [true, false, false, false, false, true]
+    
+    # 限制机器人的最大加速度/减速能力，使预测模型更符合物理实际。
+    acceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 3.4]
+    deceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 4.5]
+
+    # --- 噪声协方差矩阵 (核心调优参数) ---
+
+    # 过程噪声协方差 (Process Noise Covariance)。
+    # 代表你对运动模型的“不信任”程度。
+    # 数值越大，滤波器越“相信”传感器的测量值；数值越小，轨迹越平滑。
+    # 顺序：x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
+    process_noise_covariance: [0.05, 0.0... (共15个值)]
+
+    # 初始估计误差协方差。
+    # 初始时，如果你对某个变量完全不确定，可以设置一个较大的初值（如 1e-6），
+    # 这样滤波器会快速收敛到第一个测量值。
+    initial_estimate_covariance: [1e-9, 1e-9... (共15个值)]
