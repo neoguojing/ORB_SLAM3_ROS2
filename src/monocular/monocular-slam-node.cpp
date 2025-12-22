@@ -188,35 +188,13 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 }
 
 void MonocularSlamNode::PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp){
-    // 1. 检查输入是否为彩色，如果不是则转为彩色（增强鲁棒性）
-    cv::Mat imCopy;
-    if (im.channels() == 1) {
-        cv::cvtColor(im, imCopy, cv::COLOR_GRAY2RGB);
-    } else {
-        imCopy = im.clone(); // 直接使用 RGB/BGR 原图
-    }
-
-    // 3. 获取跟踪状态下的特征点数据
-    // 注意：具体函数名可能因你的 ORB-SLAM3 封装版本而异（常见如 GetTrackedKeyPointsUn）
-    std::vector<cv::KeyPoint> vKeys = m_SLAM->GetTrackedKeyPoints(); 
-    std::vector<bool> vMatches = m_SLAM->GetTrackedMapPointsMask(); 
-
-    // 4. 在彩色图上渲染特征点
-    for(size_t i = 0; i < vKeys.size(); i++) {
-        if(vMatches[i]) {
-            // 跟踪成功的点：绘制绿色实心圆
-            cv::circle(imCopy, vKeys[i].pt, 2, cv::Scalar(0, 255, 0), -1);
-            // 可选：画一个小十字，更清晰
-            // cv::drawMarker(imCopy, vKeys[i].pt, cv::Scalar(0, 255, 0), cv::MARKER_CROSS, 4);
-        } else {
-            // 提取但未匹配的点：绘制红色空心小圆
-            cv::circle(imCopy, vKeys[i].pt, 1, cv::Scalar(0, 0, 255), 1);
-        }
-    }
+     // 3. 获取跟踪状态下的特征点数据
+    cv::Mat debugImage = m_SLAM->DrawFrame();
+    if (debugImage.empty()) return;
 
     // 5. 转换并发布消息
     // 注意：如果你的输入是 RGB，这里用 "rgb8"；如果是 BGR（OpenCV 默认），用 "bgr8"
-    auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "rgb8", imCopy).toImageMsg();
+    auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "rgb8", debugImage).toImageMsg();
     debug_msg->header.stamp = stamp;
     debug_msg->header.frame_id = "camera_link"; // 对应你 TF 树中的相机坐标系名称
 
