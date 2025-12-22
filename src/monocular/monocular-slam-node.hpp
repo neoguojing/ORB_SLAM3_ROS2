@@ -40,7 +40,9 @@ private:
 
     // --- 数据处理与发布 ---
     void PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp);
-    void PublishMapPoints();
+    void PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp);
+
+    void PublishMapPoints(const rclcpp::Time& stamp);
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
@@ -48,11 +50,13 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr m_imu_subscriber;
 
     // --- 发布者 ---
-    
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr m_pose_publisher; // 2. 发布 Pose 给 Rviz 和你自己看
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_publisher;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_cloud_publisher;
     std::unique_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
+
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr m_debug_img_publisher;
+
     
     ORB_SLAM3::System* m_SLAM;
 
