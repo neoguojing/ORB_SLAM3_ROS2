@@ -40,7 +40,7 @@ private:
 
     // --- 数据处理与发布 ---
     void PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp);
-    void PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp);
+    void PublishImageData(const rclcpp::Time& stamp);
 
     void PublishMapPoints(const rclcpp::Time& stamp);
 

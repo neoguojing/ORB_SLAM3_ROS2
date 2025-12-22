@@ -176,7 +176,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) {
             PublishMapPoints(stamp);
-            PublishImageData(im_gray,stamp);
+            PublishImageData(stamp);
         }
     } else if (state == ORB_SLAM3::Tracking::LOST) {
         RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", state);
@@ -187,18 +187,18 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     }
 }
 
-void MonocularSlamNode::PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp){
+void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
      // 3. 获取跟踪状态下的特征点数据
-    cv::Mat debugImage = m_SLAM->DrawFrame();
-    if (debugImage.empty()) return;
+    // cv::Mat debugImage = m_SLAM->DrawFrame();
+    // if (debugImage.empty()) return;
 
-    // 5. 转换并发布消息
-    // 注意：如果你的输入是 RGB，这里用 "rgb8"；如果是 BGR（OpenCV 默认），用 "bgr8"
-    auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "rgb8", debugImage).toImageMsg();
-    debug_msg->header.stamp = stamp;
-    debug_msg->header.frame_id = "camera_link"; // 对应你 TF 树中的相机坐标系名称
+    // // 5. 转换并发布消息
+    // // 注意：如果你的输入是 RGB，这里用 "rgb8"；如果是 BGR（OpenCV 默认），用 "bgr8"
+    // auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "rgb8", debugImage).toImageMsg();
+    // debug_msg->header.stamp = stamp;
+    // debug_msg->header.frame_id = "camera_link"; // 对应你 TF 树中的相机坐标系名称
 
-    m_debug_img_publisher->publish(*debug_msg);
+    // m_debug_img_publisher->publish(*debug_msg);
 }
 
 void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp)
