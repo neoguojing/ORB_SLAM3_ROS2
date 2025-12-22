@@ -187,7 +187,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     }
 }
 
-void PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp){
+void MonocularSlamNode::PublishImageData(const cv::Mat& im, const rclcpp::Time& stamp){
     // 1. 检查输入是否为彩色，如果不是则转为彩色（增强鲁棒性）
     cv::Mat imCopy;
     if (im.channels() == 1) {
