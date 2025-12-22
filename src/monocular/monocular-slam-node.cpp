@@ -19,12 +19,12 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
 
     // --- 2. 初始化发布者 ---
     // 使用默认的可靠通信 (QoS 10)
-    m_pose_publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>("~/pose", 10);
-    m_odom_publisher = this->create_publisher<nav_msgs::msg::Odometry>("~/odom", 10);
+    m_pose_publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam3/pose", 10);
+    m_odom_publisher = this->create_publisher<nav_msgs::msg::Odometry>("/slam3/odom", 10);
     
     // 地图点云数据量大，建议使用较小的队列以减少延迟
-    m_cloud_publisher = this->create_publisher<sensor_msgs::msg::PointCloud2>("~/map_points", 5);
-    m_debug_img_publisher = this->create_publisher<sensor_msgs::msg::Image>("~/debug_image", 10);
+    m_cloud_publisher = this->create_publisher<sensor_msgs::msg::PointCloud2>("/slam3/map_points", 5);
+    m_debug_img_publisher = this->create_publisher<sensor_msgs::msg::Image>("/slam3/debug_image", 10);
 
     // --- 3. 初始化订阅者 ---
     // 图像和 IMU 建议使用传感器专用的 QoS (Best Effort / Sensor Data)
@@ -189,7 +189,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
 void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
      // 3. 获取跟踪状态下的特征点数据
-    // cv::Mat debugImage = m_SLAM->DrawFrame();
+    // cv::Mat debugImage = m_SLAM.GetFrameDrawer()->DrawFrame();
     // if (debugImage.empty()) return;
 
     // // 5. 转换并发布消息
