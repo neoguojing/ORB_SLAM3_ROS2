@@ -12,7 +12,8 @@ all: build
 # 1. 编译项目
 build:
 	@echo "开始编译 ROS 2 节点..."
-	cd $(WS_PATH) && colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+	cd $(WS_PATH) && colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
+	bash -c "source $(WS_PATH)/install/setup.bash
 	@echo "编译完成。"
 
 # 2. 运行单目节点
