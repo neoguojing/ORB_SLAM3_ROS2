@@ -251,20 +251,20 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
 
     // --- 6. 广播 TF 变换 (map -> odom) ---
     // 逻辑：SLAM 告诉系统，里程计原点在全局地图的什么位置
-    geometry_msgs::msg::TransformStamped tf_msg;
-    tf_msg.header.stamp = stamp;
-    tf_msg.header.frame_id = "map";       // 父节点：全局地图
-    tf_msg.child_frame_id = "odom";       // 子节点：里程计原点
+    // geometry_msgs::msg::TransformStamped tf_msg;
+    // tf_msg.header.stamp = stamp;
+    // tf_msg.header.frame_id = "map";       // 父节点：全局地图
+    // tf_msg.child_frame_id = "odom";       // 子节点：里程计原点
 
-    tf_msg.transform.translation.x = p_ros.x();
-    tf_msg.transform.translation.y = p_ros.y();
-    tf_msg.transform.translation.z = p_ros.z();
-    tf_msg.transform.rotation.x = q_ros.x();
-    tf_msg.transform.rotation.y = q_ros.y();
-    tf_msg.transform.rotation.z = q_ros.z();
-    tf_msg.transform.rotation.w = q_ros.w();
+    // tf_msg.transform.translation.x = p_ros.x();
+    // tf_msg.transform.translation.y = p_ros.y();
+    // tf_msg.transform.translation.z = p_ros.z();
+    // tf_msg.transform.rotation.x = q_ros.x();
+    // tf_msg.transform.rotation.y = q_ros.y();
+    // tf_msg.transform.rotation.z = q_ros.z();
+    // tf_msg.transform.rotation.w = q_ros.w();
 
-    m_tf_broadcaster->sendTransform(tf_msg);
+    // m_tf_broadcaster->sendTransform(tf_msg);
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     auto odom_msg = nav_msgs::msg::Odometry();
@@ -277,22 +277,20 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
     odom_msg.child_frame_id = "base_link";
 
     // 7.2 填充位姿数据
-    // 注意：如果你的 pose_msg.pose 是相对于 map 的，
-    // 而你现在想发相对于 odom 的，逻辑上它们在初始时刻是重合的。
-    odom_msg.pose.pose = pose_msg.pose;
+    // ❌ 不发布 pose（防止语义错误）
+    odom_msg.pose.pose.orientation.w = 1.0;
 
-    // 7.3 填充协方差 (重要：作为里程计输入，通常比作为 map 输入时设置得略大一点)
-    for(int i=0; i<36; i++) {
+    for (int i = 0; i < 36; ++i)
         odom_msg.pose.covariance[i] = 0.0;
-    }
-    // 给 x, y, z 设置方差 (例如 0.01 米，给 EKF 留出融合 IMU 的空间)
-    odom_msg.pose.covariance[0]  = 0.01; // x
-    odom_msg.pose.covariance[7]  = 0.01; // y
-    odom_msg.pose.covariance[14] = 0.01; // z
-    // 旋转方差
-    odom_msg.pose.covariance[21] = 0.05; // roll
-    odom_msg.pose.covariance[28] = 0.05; // pitch
-    odom_msg.pose.covariance[35] = 0.05; // yaw
+
+    // 告诉 EKF：不要信这个 pose
+    odom_msg.pose.covariance[0]  = 1e6;
+    odom_msg.pose.covariance[7]  = 1e6;
+    odom_msg.pose.covariance[14] = 1e6;
+    odom_msg.pose.covariance[21] = 1e6;
+    odom_msg.pose.covariance[28] = 1e6;
+    odom_msg.pose.covariance[35] = 1e6;
+
 
     // 7.4 填充速度数据 (Twist)
     // 如果不计算速度，必须给速度协方差赋极大值
