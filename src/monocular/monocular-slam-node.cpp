@@ -174,16 +174,14 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     if (state == ORB_SLAM3::Tracking::OK) {
         // 1. 获取 SLAM 世界系下的速度
         Eigen::Vector3f v_world;
-        ORB_SLAM3::Frame currentFrame = mpSLAM->GetTracking()->mCurrentFrame;
+        ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracking()->mCurrentFrame;
         const Eigen::Vector3f* v_world_ptr = nullptr;
         const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
 
         // 1. 速度：只有在 IMU 初始化完成后才可信
-        if (currentFrame.mInertialState != nullptr)
-        {
-            v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
-            v_world_ptr = &v_world;
-        }
+        v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
+        v_world_ptr = &v_world;
+    
 
         // 2. IMU：确保队列非空，参考系：base_link
         if (!vImuMeas.empty())
