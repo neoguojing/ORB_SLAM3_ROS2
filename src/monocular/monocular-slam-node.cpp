@@ -172,7 +172,27 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 4. 检查状态并发布
     if (state == ORB_SLAM3::Tracking::OK) {
-        PublishData(Tcw, stamp);
+        // 1. 获取 SLAM 世界系下的速度
+        Eigen::Vector3f v_world;
+        ORB_SLAM3::Frame currentFrame = mpSLAM->GetTracking()->mCurrentFrame;
+        const Eigen::Vector3f* v_world_ptr = nullptr;
+        const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
+
+        // 1. 速度：只有在 IMU 初始化完成后才可信
+        if (currentFrame.mInertialState != nullptr)
+        {
+            v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空
+            v_world_ptr = &v_world;
+        }
+
+        // 2. IMU：确保队列非空
+        if (!vImuMeas.empty())
+        {
+            imu_ptr = &vImuMeas.back();
+        }
+
+        PublishData(Tcw, v_world_ptr, imu_ptr, stamp);
+
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) {
             PublishMapPoints(stamp);
@@ -203,24 +223,71 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
     m_debug_img_publisher->publish(*debug_msg);
 }
 
-void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp)
+void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp)
 {
     // --- DEBUG 打印 1: 进入发布函数 ---
     // 使用 THROTTLE 避免日志刷屏，每 1 秒输出一次
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose and TF...");
-
-    // 1. 获取相机在 SLAM 世界系下的位姿 (Twc)
+    // =======================
+    // 1. 位姿语义说明
+    // =======================
+    // ORB-SLAM3 输出的 Tcw 表示：
+    //   从 world(map) 坐标系 → camera 坐标系 的变换
+    //   p_c = Tcw * p_w
+    //
+    // 而在 ROS / Nav2 / TF 中，我们更关心：
+    //   相机（或机器人）在 world(map) 坐标系中的位姿
+    //   即：Twc = (Tcw)^(-1)
     Sophus::SE3f Twc = Tcw.inverse();
+    // =======================
+    // 2. 提取平移和旋转（SLAM / OpenCV 坐标系）
+    // =======================
+    // p_cv：
+    //   相机在 SLAM 世界系中的位置（单位：米）
+    //   坐标系：ORB-SLAM3 / OpenCV 视觉坐标系
     Eigen::Vector3f p_cv = Twc.translation();
+    // R_cv：
+    //   相机姿态的旋转矩阵
+    //   描述 camera_frame 相对于 world_frame 的方向
+    //   坐标系：ORB-SLAM3 / OpenCV
     Eigen::Matrix3f R_cv = Twc.rotationMatrix();
-
-    // 3. 变换平移向量
+    // =======================
+    // 3. 平移向量：视觉坐标系 → ROS 坐标系
+    // =======================
+    // m_R_vis_ros：
+    //   固定旋转矩阵，用于将 ORB-SLAM3(OpenCV) 坐标轴
+    //   映射到 ROS REP-103 坐标轴
+    //
+    //   OpenCV:   x → 右, y → 下, z → 前
+    //   ROS:      x → 前, y → 左, z → 上
+    //
+    // 因此：
+    //   p_ros = R_vis_to_ros * p_cv
+    //
+    // 这是一个纯坐标系变换，不改变物理位置
     Eigen::Vector3f p_ros = m_R_vis_ros * p_cv;
+    // =======================
+    // 4. 旋转矩阵：坐标系基变换（非常关键）
+    // =======================
 
-    // 4. 变换旋转矩阵
-    // 公式: R_new = R_v2r * R_old * R_v2r.transpose()
-    Eigen::Matrix3f R_ros = m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
+    // 对旋转矩阵进行坐标系变换，必须使用：
+    //   R_ros = R_vis_to_ros * R_cv * R_vis_to_ros^T
+    //
+    // 含义：
+    //   左乘：  将“旋转作用的输出向量”切换到 ROS 坐标系
+    //   右乘：  将“旋转作用的输入向量”切换到 ROS 坐标系
+    //
+    // 这是严格的线性代数基变换公式，不是经验写法
+    Eigen::Matrix3f R_ros =
+        m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
+    // =======================
+    // 5. 转为四元数（ROS / TF / 消息使用）
+    // =======================
+    // ROS 中姿态通常用 quaternion 表示
     Eigen::Quaternionf q_ros(R_ros);
+
+    // 数值稳定性处理：
+    // 防止浮点误差导致四元数不单位化（否则 TF 会抖）
     q_ros.normalize();
 
     // --- DEBUG 打印 2: 坐标数值校验 ---
@@ -267,42 +334,61 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw, const rclcpp::Time&
     // m_tf_broadcaster->sendTransform(tf_msg);
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
-    auto odom_msg = nav_msgs::msg::Odometry();
-
-    // 7.1 设置 Header
-    odom_msg.header.stamp = stamp; 
-    // 修改点：设为 "odom"。告诉 EKF 这是相对于里程计原点的位姿
-    odom_msg.header.frame_id = "odom"; 
-    // 被观测的对象依然是机器人本体
-    odom_msg.child_frame_id = "base_link";
-
-    // 7.2 填充位姿数据
-    // ❌ 不发布 pose（防止语义错误）
-    odom_msg.pose.pose.orientation.w = 1.0;
-
-    for (int i = 0; i < 36; ++i)
-        odom_msg.pose.covariance[i] = 0.0;
-
-    // 告诉 EKF：不要信这个 pose
-    odom_msg.pose.covariance[0]  = 1e6;
-    odom_msg.pose.covariance[7]  = 1e6;
-    odom_msg.pose.covariance[14] = 1e6;
-    odom_msg.pose.covariance[21] = 1e6;
-    odom_msg.pose.covariance[28] = 1e6;
-    odom_msg.pose.covariance[35] = 1e6;
+    if (v_world) {
+        Eigen::Vector3f v_body_ros =
+            m_R_vis_ros *                  // OpenCV 相机系 → ROS base_link 系
+            (R_cv.transpose() * (*v_world) // SLAM 世界系 → 相机机体系
+            );
 
 
-    // 7.4 填充速度数据 (Twist)
-    // 如果不计算速度，必须给速度协方差赋极大值
-    for(int i=0; i<36; i++) {
-        odom_msg.twist.covariance[i] = 0.0;
+        auto odom_msg = nav_msgs::msg::Odometry();
+
+        // 7.1 设置 Header
+        odom_msg.header.stamp = stamp; 
+        // 修改点：设为 "odom"。告诉 EKF 这是相对于里程计原点的位姿
+        odom_msg.header.frame_id = "odom"; 
+        // 被观测的对象依然是机器人本体
+        odom_msg.child_frame_id = "base_link";
+
+        // 7.2 填充位姿数据
+        // ❌ 不发布 pose（防止语义错误）
+        // ❌ 明确告诉 EKF：不要 pose
+        odom_msg.pose.pose.orientation.w = 1.0;
+        for (int i = 0; i < 36; ++i)
+            odom_msg.pose.covariance[i] = 1e6;
+
+        odom_msg.twist.twist.linear.x = v_body_ros.x();
+        odom_msg.twist.twist.linear.y = v_body_ros.y();
+        odom_msg.twist.twist.linear.z = v_body_ros.z();
+        // ===== 协方差 =====
+        for (int i = 0; i < 36; i++)
+            odom_msg.twist.covariance[i] = 0.0;
+
+        odom_msg.twist.covariance[0]  = 0.05;
+        odom_msg.twist.covariance[7]  = 0.05;
+        odom_msg.twist.covariance[14] = 0.1;
+
+        // ===== 角速度（IMU）=====
+        if (lastPoint) {
+            Eigen::Vector3f w_body_ros =
+                m_R_vis_ros * lastPoint->w;  // 相机坐标系 → ROS base_link 坐标系
+            odom_msg.twist.twist.angular.x = w_body_ros.x();
+            odom_msg.twist.twist.angular.y = w_body_ros.y();
+            odom_msg.twist.twist.angular.z = w_body_ros.z();
+
+
+            odom_msg.twist.covariance[21] = 0.02;
+            odom_msg.twist.covariance[28] = 0.02;
+            odom_msg.twist.covariance[35] = 0.01;
+        } else {
+            odom_msg.twist.covariance[21] = 1e6;
+            odom_msg.twist.covariance[28] = 1e6;
+            odom_msg.twist.covariance[35] = 1e6;
+        }
+        // 发布数据
+        m_odom_publisher->publish(odom_msg);
     }
-    odom_msg.twist.covariance[0]  = 1.0e6; // 完全不信任此速度
-    odom_msg.twist.covariance[7]  = 1.0e6;
-    odom_msg.twist.covariance[35] = 1.0e6;
-
-    // 发布数据
-    m_odom_publisher->publish(odom_msg);
+    
 
     // --- DEBUG 打印 3: 循环计数 ---
     static int pub_count = 0;
