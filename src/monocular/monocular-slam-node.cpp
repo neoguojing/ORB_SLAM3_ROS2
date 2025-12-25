@@ -138,8 +138,8 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     // --- DEBUG 打印 4: SLAM 开始执行（记录耗时） ---
     auto t1 = std::chrono::high_resolution_clock::now();
     // 3. 核心调用：根据是否有 IMU 数据选择调用接口
-    Sophus::SE3f Tcw;
-
+    // 参考系：slam
+    Sophus::SE3f Tcw; 
     if (vImuMeas.empty()) {
         // 如果没有 IMU 数据，调用纯单目接口
         // 注意：如果你的系统初始化为 IMU_MONOCULAR，传空可能会报错或依然不就绪
@@ -181,11 +181,11 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         // 1. 速度：只有在 IMU 初始化完成后才可信
         if (currentFrame.mInertialState != nullptr)
         {
-            v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空
+            v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
             v_world_ptr = &v_world;
         }
 
-        // 2. IMU：确保队列非空
+        // 2. IMU：确保队列非空，参考系：base_link
         if (!vImuMeas.empty())
         {
             imu_ptr = &vImuMeas.back();
@@ -228,67 +228,21 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
     // --- DEBUG 打印 1: 进入发布函数 ---
     // 使用 THROTTLE 避免日志刷屏，每 1 秒输出一次
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose and TF...");
-    // =======================
-    // 1. 位姿语义说明
-    // =======================
-    // ORB-SLAM3 输出的 Tcw 表示：
-    //   从 world(map) 坐标系 → camera 坐标系 的变换
-    //   p_c = Tcw * p_w
-    //
-    // 而在 ROS / Nav2 / TF 中，我们更关心：
-    //   相机（或机器人）在 world(map) 坐标系中的位姿
-    //   即：Twc = (Tcw)^(-1)
-    Sophus::SE3f Twc = Tcw.inverse();
-    // =======================
-    // 2. 提取平移和旋转（SLAM / OpenCV 坐标系）
-    // =======================
-    // p_cv：
-    //   相机在 SLAM 世界系中的位置（单位：米）
-    //   坐标系：ORB-SLAM3 / OpenCV 视觉坐标系
-    Eigen::Vector3f p_cv = Twc.translation();
-    // R_cv：
-    //   相机姿态的旋转矩阵
-    //   描述 camera_frame 相对于 world_frame 的方向
-    //   坐标系：ORB-SLAM3 / OpenCV
-    Eigen::Matrix3f R_cv = Twc.rotationMatrix();
-    // =======================
-    // 3. 平移向量：视觉坐标系 → ROS 坐标系
-    // =======================
-    // m_R_vis_ros：
-    //   固定旋转矩阵，用于将 ORB-SLAM3(OpenCV) 坐标轴
-    //   映射到 ROS REP-103 坐标轴
-    //
-    //   OpenCV:   x → 右, y → 下, z → 前
-    //   ROS:      x → 前, y → 左, z → 上
-    //
-    // 因此：
-    //   p_ros = R_vis_to_ros * p_cv
-    //
-    // 这是一个纯坐标系变换，不改变物理位置
-    Eigen::Vector3f p_ros = m_R_vis_ros * p_cv;
-    // =======================
-    // 4. 旋转矩阵：坐标系基变换（非常关键）
-    // =======================
 
-    // 对旋转矩阵进行坐标系变换，必须使用：
-    //   R_ros = R_vis_to_ros * R_cv * R_vis_to_ros^T
-    //
-    // 含义：
-    //   左乘：  将“旋转作用的输出向量”切换到 ROS 坐标系
-    //   右乘：  将“旋转作用的输入向量”切换到 ROS 坐标系
-    //
-    // 这是严格的线性代数基变换公式，不是经验写法
-    Eigen::Matrix3f R_ros =
-        m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
-    // =======================
-    // 5. 转为四元数（ROS / TF / 消息使用）
-    // =======================
-    // ROS 中姿态通常用 quaternion 表示
-    Eigen::Quaternionf q_ros(R_ros);
+    // 1. 获取外参 Tbc (Camera to Body)
+    // 建议：直接从 settings 获取对象，不要直接取地址
+    Sophus::SE3f Tbc_val = m_SLAM->GetSetting()->Tbc(); 
+    Sophus::SE3f* pTbc = nullptr;
 
-    // 数值稳定性处理：
-    // 防止浮点误差导致四元数不单位化（否则 TF 会抖）
-    q_ros.normalize();
+    // 检查 Tbc 是否有效 (不是单位阵且不为零)
+    // 注：Sophus 没有 isZero()，通常检查其 matrix().isIdentity()
+    if (!Tbc_val.matrix().isIdentity()) {
+        pTbc = &Tbc_val;
+    }
+    Eigen::Matrix3f R_cv;
+    Eigen::Vector3f p_ros;
+    Eigen::Quaternionf q_ros;
+    Utility::ConvertSLAMPoseToROS(Tcw,R_cv,p_ros,q_ros,pTbc);
 
     // --- DEBUG 打印 2: 坐标数值校验 ---
     // 检查平移是否超出了合理范围（比如超过了 100米），有助于发现初始化失败的情况
@@ -316,12 +270,12 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     m_pose_publisher->publish(pose_msg);
 
-    // --- 6. 广播 TF 变换 (map -> odom) ---
+    // --- 6. 广播 TF 变换 (map -> camera_link) ---
     // 逻辑：SLAM 告诉系统，里程计原点在全局地图的什么位置
     // geometry_msgs::msg::TransformStamped tf_msg;
     // tf_msg.header.stamp = stamp;
-    // tf_msg.header.frame_id = "map";       // 父节点：全局地图
-    // tf_msg.child_frame_id = "odom";       // 子节点：里程计原点
+    // tf_msg.header.frame_id = "map";        // 父节点：全局地图
+    // tf_msg.child_frame_id = "base_link"; // 子节点：里程计原点
 
     // tf_msg.transform.translation.x = p_ros.x();
     // tf_msg.transform.translation.y = p_ros.y();
@@ -335,11 +289,8 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {
-        Eigen::Vector3f v_body_ros =
-            m_R_vis_ros *                  // OpenCV 相机系 → ROS base_link 系
-            (R_cv.transpose() * (*v_world) // SLAM 世界系 → 相机机体系
-            );
-
+        Eigen::Vector3f v_body_ros;
+        Utility::ConvertSLALinearVelocityToROS(v_world,R_cv,v_body_ros);
 
         auto odom_msg = nav_msgs::msg::Odometry();
 
@@ -368,19 +319,23 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
         odom_msg.twist.covariance[7]  = 0.05;
         odom_msg.twist.covariance[14] = 0.1;
 
-        // ===== 角速度（IMU）=====
-        if (lastPoint) {
-            Eigen::Vector3f w_body_ros =
-                m_R_vis_ros * lastPoint->w;  // 相机坐标系 → ROS base_link 坐标系
-            odom_msg.twist.twist.angular.x = w_body_ros.x();
-            odom_msg.twist.twist.angular.y = w_body_ros.y();
-            odom_msg.twist.twist.angular.z = w_body_ros.z();
-
+        // ===============================
+        // 5. 角速度（IMU 原始数据）
+        // ===============================
+        if (lastPoint)
+        {
+            // lastPoint->w 已经在 IMU / body 坐标系
+            // 不需要 OpenCV → ROS 变换
+            odom_msg.twist.twist.angular.x = lastPoint->w.x();
+            odom_msg.twist.twist.angular.y = lastPoint->w.y();
+            odom_msg.twist.twist.angular.z = lastPoint->w.z();
 
             odom_msg.twist.covariance[21] = 0.02;
             odom_msg.twist.covariance[28] = 0.02;
             odom_msg.twist.covariance[35] = 0.01;
-        } else {
+        }
+        else
+        {
             odom_msg.twist.covariance[21] = 1e6;
             odom_msg.twist.covariance[28] = 1e6;
             odom_msg.twist.covariance[35] = 1e6;
