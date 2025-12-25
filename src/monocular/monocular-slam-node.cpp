@@ -174,7 +174,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     if (state == ORB_SLAM3::Tracking::OK) {
         // 1. 获取 SLAM 世界系下的速度
         Eigen::Vector3f v_world;
-        ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracking()->mCurrentFrame;
+        ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracker()->mCurrentFrame;
         const Eigen::Vector3f* v_world_ptr = nullptr;
         const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
 
