@@ -39,7 +39,7 @@ private:
     void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg);
 
     // --- 数据处理与发布 ---
-    void PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp)
+    void PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp);
     void PublishImageData(const rclcpp::Time& stamp);
 
     void PublishMapPoints(const rclcpp::Time& stamp);
