@@ -71,6 +71,8 @@ private:
     // 根据 REP-103 标准进行轴映射
     Eigen::Matrix3f m_R_vis_ros;
     int m_frame_count = 0;
+    Sophus::SE3f m_Tbc;
+    bool m_bTbcLoaded = false;
 };
 
 #endif

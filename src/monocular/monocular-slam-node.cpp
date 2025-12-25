@@ -103,6 +103,11 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
         "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
         Utility::StampToSec(stamp), im.cols, im.rows);
+    // 尝试获取Tbc
+    if (!m_bTbcLoaded && m_SLAM->GetSetting()) {
+        m_Tbc = m_SLAM->GetSetting()->Tbc();
+        m_bTbcLoaded = true;
+    }
 
     double t_image = Utility::StampToSec(stamp);
 
@@ -174,12 +179,11 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     if (state == ORB_SLAM3::Tracking::OK) {
         // 1. 获取 SLAM 世界系下的速度
         Eigen::Vector3f v_world;
-        ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracker()->mCurrentFrame;
         const Eigen::Vector3f* v_world_ptr = nullptr;
         const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
-
-        // 1. 速度：只有在 IMU 初始化完成后才可信
-        v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
+        // ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracker()->mCurrentFrame;
+        // // 1. 速度：只有在 IMU 初始化完成后才可信
+        // v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
         v_world_ptr = &v_world;
     
 
@@ -229,14 +233,13 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     // 1. 获取外参 Tbc (Camera to Body)
     // 建议：直接从 settings 获取对象，不要直接取地址
-    Sophus::SE3f Tbc_val = m_SLAM->GetSetting()->Tbc(); 
     Sophus::SE3f* pTbc = nullptr;
-
     // 检查 Tbc 是否有效 (不是单位阵且不为零)
     // 注：Sophus 没有 isZero()，通常检查其 matrix().isIdentity()
-    if (!Tbc_val.matrix().isIdentity()) {
-        pTbc = &Tbc_val;
+    if (m_bTbcLoaded) {
+        pTbc = &m_Tbc;
     }
+    
     Eigen::Matrix3f R_cv;
     Eigen::Vector3f p_ros;
     Eigen::Quaternionf q_ros;
