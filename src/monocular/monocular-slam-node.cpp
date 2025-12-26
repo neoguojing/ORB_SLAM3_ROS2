@@ -181,12 +181,23 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         Eigen::Vector3f v_world;
         const Eigen::Vector3f* v_world_ptr = nullptr;
         const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
-        // ORB_SLAM3::Frame currentFrame = m_SLAM->GetTracker()->mCurrentFrame;
-        // // 1. 速度：只有在 IMU 初始化完成后才可信
-        // v_world = currentFrame.GetVelocity();   // 成员变量，防止悬空,参考系：slam
-        v_world_ptr = &v_world;
-    
 
+        // 获取 Tracker 指针
+        ORB_SLAM3::Tracking* pTracker = m_SLAM->GetTracker();
+        if(pTracker) {
+            // 关键：不要拷贝 Frame，只拷贝 Vector3f（这是基本类型，拷贝极快且相对安全）
+            // 最好判断一下当前的模式是否支持速度获取
+            try {
+                v_world = pTracker->mCurrentFrame.GetVelocity();
+                if(!v_world.isZero() && !v_world.array().isNaN().any()) {
+                    v_world_ptr = &v_world;
+                }
+                
+            } catch (...) {
+                RCLCPP_ERROR(this->get_logger(), "读取速度失败");
+            }
+        }
+    
         // 2. IMU：确保队列非空，参考系：base_link
         if (!vImuMeas.empty())
         {
@@ -245,10 +256,17 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
     Eigen::Quaternionf q_ros;
     Utility::ConvertSLAMPoseToROS(Tcw,R_cv,p_ros,q_ros,pTbc);
 
-    // --- DEBUG 打印 2: 坐标数值校验 ---
-    // 检查平移是否超出了合理范围（比如超过了 100米），有助于发现初始化失败的情况
-    if (p_ros.norm() > 100.0) {
-        RCLCPP_WARN(this->get_logger(), "Warning: Pose seems too large! Dist: %.2f m", p_ros.norm());
+    // 3. 检查平移向量 p_ros (是否包含非数字或无穷大)
+    if (p_ros.array().isNaN().any() || p_ros.array().isInf().any()) {
+        is_valid = false;
+        RCLCPP_ERROR(this->get_logger(), "有效性检查失败：p_ros 包含 NaN 或 Inf!");
+    }
+
+    // 4. 检查四元数 q_ros (确保已归一化，且不包含非法值)
+    if (std::abs(q_ros.norm() - 1.0f) > 0.1) {
+        // 如果模长偏离 1 太远，说明旋转矩阵转换出错
+        is_valid = false;
+        RCLCPP_ERROR(this->get_logger(), "有效性检查失败：四元数未归一化 (norm: %.2f)", q_ros.norm());
     }
 
     // 打印当前位姿 (ROS 坐标系)
@@ -292,6 +310,25 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
     if (v_world) {
         Eigen::Vector3f v_body_ros;
         Utility::ConvertSLALinearVelocityToROS(v_world,R_cv,v_body_ros);
+
+        // 2. 检查数值完整性 (防止 NaN 和 Inf)
+        if (v_body_ros.array().isNaN().any() || v_body_ros.array().isInf().any()) {
+            RCLCPP_ERROR(this->get_logger(), "速度转换异常：检测到 NaN 或 Inf！跳过发布。");
+            return; // 必须直接拦截，不能发布
+        }
+
+        // 3. 检查物理合理性 (逻辑校验)
+        // 假设你的机器人最大速度不会超过 5m/s
+        float speed_norm = v_body_ros.norm();
+        if (speed_norm > 5.0f) {
+            RCLCPP_WARN(this->get_logger(), "检测到异常高速: %.2f m/s，可能是 SLAM 跟踪发散", speed_norm);
+            // 根据需求决定是否拦截，或者进行限幅处理
+        }
+
+        // 4. 打印调试信息 (Throttle 限制打印频率)
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+            "机体系速度 (ROS): [vx:%.3f, vy:%.3f, vz:%.3f] | 总速率: %.2f m/s",
+            v_body_ros.x(), v_body_ros.y(), v_body_ros.z(), speed_norm);
 
         auto odom_msg = nav_msgs::msg::Odometry();
 
