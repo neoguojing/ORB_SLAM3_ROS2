@@ -4,7 +4,8 @@ PROJECT_ROOT := $(shell pwd)
 WS_PATH   = $(PROJECT_ROOT)
 # VOC_PATH  = $(ORB_ROOT)/Vocabulary/ORBvoc.txt
 VOC_PATH  = $(PROJECT_ROOT)/vocabulary/ORBvoc.txt
-YAML_PATH = $(PROJECT_ROOT)/config/monocular/EuRoC.yaml
+# YAML_PATH = $(PROJECT_ROOT)/config/monocular/EuRoC.yaml
+YAML_PATH = $(PROJECT_ROOT)/config/monocular-inertial/EuRoC.yaml
 
 # 默认指令：编译
 all: build

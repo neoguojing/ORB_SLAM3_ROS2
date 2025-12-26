@@ -151,8 +151,8 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
     } else {
         // 只有有数据时才调用惯性接口
-        // Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vImuMeas);
-        Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
+        Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vImuMeas);
+        // Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
     }
 
     if(Tcw.matrix().isZero()) {
@@ -258,14 +258,12 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     // 3. 检查平移向量 p_ros (是否包含非数字或无穷大)
     if (p_ros.array().isNaN().any() || p_ros.array().isInf().any()) {
-        is_valid = false;
         RCLCPP_ERROR(this->get_logger(), "有效性检查失败：p_ros 包含 NaN 或 Inf!");
     }
 
     // 4. 检查四元数 q_ros (确保已归一化，且不包含非法值)
     if (std::abs(q_ros.norm() - 1.0f) > 0.1) {
         // 如果模长偏离 1 太远，说明旋转矩阵转换出错
-        is_valid = false;
         RCLCPP_ERROR(this->get_logger(), "有效性检查失败：四元数未归一化 (norm: %.2f)", q_ros.norm());
     }
 
@@ -380,6 +378,12 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
         }
         // 发布数据
         m_odom_publisher->publish(odom_msg);
+
+        static int odm_count = 0;
+        odm_count++;
+        if(odm_count % 10 == 0) {
+            RCLCPP_INFO(this->get_logger(), "Successfully published %d odm.", odm_count);
+        }
     }
     
 
