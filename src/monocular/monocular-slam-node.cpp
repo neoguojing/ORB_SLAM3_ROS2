@@ -155,9 +155,16 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         // Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
     }
 
-    if(Tcw.matrix().isZero()) {
+    if(Tcw.matrix().isZero() || Tcw.matrix().array().isNaN().any() || Tcw.matrix().array().isInf().any()) {
         // 如果返回的是空位姿，说明这一帧在预处理阶段就被丢弃了
-        RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", Tcw.matrix().isZero());
+        std::stringstream ss;
+        // 使用 Eigen 的内置格式化输出矩阵
+        ss << "\n" << Tcw.matrix();
+        RCLCPP_ERROR(this->get_logger(), 
+            "--- 检测到无效位姿 (NaN/Inf) ---\n"
+            "Tcw Matrix: %s\n"
+            "--------------------------------", 
+            ss.str().c_str());
         return;
     }
 

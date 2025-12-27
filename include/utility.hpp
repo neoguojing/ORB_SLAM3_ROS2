@@ -43,6 +43,7 @@ public:
       Eigen::Quaternionf& q_ros,
       const Sophus::SE3f* Tbc = nullptr)
   {
+      auto logger = rclcpp::get_logger("utility_pose");
       // OPENCV-> ROS 坐标轴基变换矩阵
       Eigen::Matrix3f m_R_vis_ros;
       m_R_vis_ros << 0, 0, 1,   // ROS X = CV Z
@@ -51,13 +52,20 @@ public:
       // 1. 扭转刚体变换
       // Tcw: slam_world -> camera   参考系是camera
       // Twc: camera -> slam_world   参考系是slam_world
+      RCLCPP_INFO(logger, "Step 1: Start conversion");
       Sophus::SE3f Twc = Tcw.inverse();
-
+      RCLCPP_INFO(logger, "Step 2: Inverse done");
       // 3. 如果存在 Camera->Body 外参，将位姿从相机系转换到机器人本体/IMU系
       // 将slam下的相机位置转换为body的位置
       Sophus::SE3f Twb;
       if (Tbc) {
-          Twb = Twc * (*Tbc);            // world -> body
+        // 使用 std::stringstream 格式化矩阵
+        std::stringstream ss;
+        ss << "\n" << Tbc->matrix(); // 获取 4x4 矩阵
+        RCLCPP_INFO(logger, "--- 当前加载的外参 Tbc (Body to Camera) ---%s", ss.str().c_str());
+
+        Twb = Twc * (*Tbc);            // world -> body
+        RCLCPP_INFO(logger, "Step 3: Tbc multiply done");
       } else {
           Twb = Twc;                     // 没有外参就当 camera == body
       }
