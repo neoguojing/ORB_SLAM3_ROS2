@@ -25,6 +25,7 @@ class MonocularSlamNode : public rclcpp::Node
 {
 public:
     MonocularSlamNode(ORB_SLAM3::System* pSLAM);
+    MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU);
 
     ~MonocularSlamNode();
 
@@ -73,6 +74,7 @@ private:
     int m_frame_count = 0;
     Sophus::SE3f m_Tbc;
     bool m_bTbcLoaded = false;
+    bool m_useIMU = false;
 };
 
 #endif

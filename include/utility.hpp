@@ -5,6 +5,7 @@
 #include <Eigen/Geometry>
 #include <sophus/se3.hpp>
 #include "rclcpp/rclcpp.hpp"
+#include "ImuTypes.h"       // 必须包含，定义了 IMU::Point
 
 class Utility
 {
@@ -52,9 +53,7 @@ public:
       // 1. 扭转刚体变换
       // Tcw: slam_world -> camera   参考系是camera
       // Twc: camera -> slam_world   参考系是slam_world
-      RCLCPP_INFO(logger, "Step 1: Start conversion");
       Sophus::SE3f Twc = Tcw.inverse();
-      RCLCPP_INFO(logger, "Step 2: Inverse done");
       // 3. 如果存在 Camera->Body 外参，将位姿从相机系转换到机器人本体/IMU系
       // 将slam下的相机位置转换为body的位置
       Sophus::SE3f Twb;
@@ -72,16 +71,15 @@ public:
       // 2. 提取slam_world 坐标系下的平移和旋转
       Eigen::Vector3f p_cv = Twb.translation();     // 可以理解为slam坐标系下相机光心的“位移向量” 但用的是 OpenCV 轴方向约定
       R_cv = Twb.rotationMatrix();  // 相机光心在slam坐标系中怎么旋转，但用的是 OpenCV 轴方向约定
-
       // 4. 将 OPENCV的坐标轴换为ROS坐标轴
       // p_ros = R_vis_ros * p_cv
       p_ros = m_R_vis_ros * p_cv;
       // R_ros = R_vis_ros * R_cv * R_vis_ros^T
       Eigen::Matrix3f R_ros = m_R_vis_ros * R_cv * m_R_vis_ros.transpose();
-
       // 5. 转换为 ROS 四元数
       q_ros = Eigen::Quaternionf(R_ros);
       q_ros.normalize();  // 防止数值误差导致非单位四元数
+      RCLCPP_INFO(logger, "ConvertSLAMPoseToROS finished");
   }
 
   /**
@@ -100,7 +98,21 @@ public:
       const Eigen::Vector3f* v_slam_world,
       const Eigen::Matrix3f& R_cv,
       Eigen::Vector3f& v_ros)
-  {
+  { 
+      auto logger = rclcpp::get_logger("utility_velocity");
+      // 1. 拦截空指针和无效输入 (预防 NaN 传播)
+      if (!v_slam_world || !v_slam_world->allFinite() || !R_cv.allFinite()) {
+          // 如果输入数据不对，直接返回全 0 速度，不要进行矩阵乘法
+          RCLCPP_WARN(logger, "v_slam_world 或 R_cv 非法，返回零速度");
+          return; 
+      }
+
+      // 2. 检查 R_cv 的合法性 (虽然它是 Eigen 矩阵，但如果它不满足旋转矩阵特性，也会出问题)
+      // 如果行列式为 0，说明矩阵不可逆或已损坏
+      if (std::abs(R_cv.determinant()) < 1e-6) {
+          RCLCPP_WARN(logger, "R_cv 非法（行列式接近零），返回零速度");
+          return;
+      }
       // OPENCV-> ROS 坐标轴基变换矩阵
       Eigen::Matrix3f m_R_vis_ros;
       m_R_vis_ros << 0, 0, 1,
@@ -117,6 +129,78 @@ public:
           // 转换为ROS坐标轴，camera如何感觉自己的运动
           v_ros = m_R_vis_ros * v_temp;                           // OPENCV -> ROS
       }
+
+      RCLCPP_INFO(logger, "ConvertSLALinearVelocityToROS finished");
+  }
+
+  // --- 打印 Eigen::Matrix3f (旋转矩阵) ---
+  static void PrintEigenMatrix3f(const std::string& name, const Eigen::Matrix3f& mat) {
+      auto logger = rclcpp::get_logger("utility_debug");
+      RCLCPP_INFO(logger, "--- %s ---", name.c_str());
+      for (int i = 0; i < 3; ++i) {
+          RCLCPP_INFO(logger, "  [%.4f, %.4f, %.4f]", 
+                      mat(i, 0), mat(i, 1), mat(i, 2));
+      }
+  }
+
+  // --- 打印 Sophus::SE3f (位姿矩阵) ---
+  static void PrintSophusSE3(const std::string& name, const Sophus::SE3f& T) {
+      auto logger = rclcpp::get_logger("utility_debug");
+      Eigen::Vector3f t = T.translation();
+      Eigen::Matrix3f R = T.rotationMatrix();
+      // 转换为欧拉角 (Z-Y-X 顺序: yaw, pitch, roll) 方便人类理解
+      Eigen::Vector3f euler = R.eulerAngles(2, 1, 0) * 180.0 / M_PI;
+
+      RCLCPP_INFO(logger, "==== %s ====", name.c_str());
+      RCLCPP_INFO(logger, "平移 (x, y, z): [%.4f, %.4f, %.4f]", t.x(), t.y(), t.z());
+      RCLCPP_INFO(logger, "旋转 (yaw, pitch, roll)°: [%.2f, %.2f, %.2f]", euler[0], euler[1], euler[2]);
+      
+      // 打印原始 3x3 旋转矩阵
+      for (int i = 0; i < 3; ++i) {
+          RCLCPP_INFO(logger, "R[%d]: [%.4f, %.4f, %.4f]", 
+                      i, R(i, 0), R(i, 1), R(i, 2));
+      }
+  }
+
+  /**
+ * @brief 打印 Eigen::Vector3f (专门用于速度、位置向量)
+ */
+  static void PrintVector3f(const std::string& name, const Eigen::Vector3f& vec) {
+      RCLCPP_INFO(rclcpp::get_logger("utility_debug"), "[DEBUG] %s: [X: %.4f, Y: %.4f, Z: %.4f] | 模长: %.4f", 
+                  name.c_str(), vec.x(), vec.y(), vec.z(), vec.norm());
+  }
+
+  /**
+   * @brief 打印 ORB_SLAM3::IMU::Point 数据
+   * @param label 打印标签，用于区分不同的调用位置
+   * @param p IMU 点指针
+   */
+  static void PrintImuPoint(const std::string& label, const ORB_SLAM3::IMU::Point* p) {
+      auto logger = rclcpp::get_logger("utility_debug");
+      if (!p) {
+          RCLCPP_WARN(logger, "[IMU DEBUG] %s: Point is NULL!", label.c_str());
+          return;
+      }
+
+      // 提取数据
+      double ts = p->t;                      // 时间戳
+      Eigen::Vector3f acc = p->a;            // 线加速度
+      Eigen::Vector3f gyr = p->w;            // 角速度
+
+      RCLCPP_INFO(logger, "==== [IMU Point: %s] ====", label.c_str());
+      RCLCPP_INFO(logger, "时间戳 (t): %.6f", ts);
+      
+      // 打印线加速度 (Acceleration)
+      // 正常静止状态下，应该能看到一个轴接近 9.8 (重力)
+      RCLCPP_INFO(logger, "线加速度 a (x,y,z): [%.4f, %.4f, %.4f] m/s^2", 
+                  acc.x(), acc.y(), acc.z());
+      
+      // 打印角速度 (Gyroscope)
+      // 机器人静止时，这些值应接近 0
+      RCLCPP_INFO(logger, "角速度 w (x,y,z): [%.4f, %.4f, %.4f] rad/s", 
+                  gyr.x(), gyr.y(), gyr.z());
+      
+      RCLCPP_INFO(logger, "-----------------------------------------");
   }
 
 };

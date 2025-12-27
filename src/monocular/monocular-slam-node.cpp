@@ -10,6 +10,7 @@
 
 using std::placeholders::_1;
 
+
 MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
 :   Node("ORB_SLAM3_ROS2")
 {
@@ -52,6 +53,12 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
                    0,-1, 0;  // ROS Z = -CV Y
 
     RCLCPP_INFO(this->get_logger(), "ORB-SLAM3 节点初始化完成，等待传感器数据...");
+}
+
+MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU)
+:  MonocularSlamNode(pSLAM)
+{
+    m_useIMU = useIMU;
 }
 
 MonocularSlamNode::~MonocularSlamNode()
@@ -107,15 +114,29 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     if (!m_bTbcLoaded && m_SLAM->GetSetting()) {
         m_Tbc = m_SLAM->GetSetting()->Tbc();
         m_bTbcLoaded = true;
+        Utility::PrintSophusSE3("Tbc 外参", m_Tbc);
     }
 
     double t_image = Utility::StampToSec(stamp);
 
     // 1. 提取缓冲区中所有早于当前图像时间的 IMU 数据
+    // 1. 增加频率监控
+    static double last_t_imu = -1;
+    double current_t_imu = Utility::StampToSec(stamp);
+    if(last_t_imu > 0 && (current_t_imu - last_t_imu) > 0.05) {
+        RCLCPP_WARN(this->get_logger(), "IMU 数据丢包严重! dt: %f", current_t_imu - last_t_imu);
+    }
+    last_t_imu = current_t_imu;
+
     std::vector<ORB_SLAM3::IMU::Point> vImuMeas;
     {
         std::lock_guard<std::mutex> lock(m_mutex_imu);
         if (!m_imu_buffer.empty()) {
+            // 关键：确保 IMU 数据已经覆盖了图像时间戳
+            if (m_imu_buffer.back().t < t_image) {
+                RCLCPP_INFO(this->get_logger(), "等待 IMU 数据到达当前图像时间...");
+                return; 
+            }
             auto it = m_imu_buffer.begin();
             while (it != m_imu_buffer.end() && it->t <= t_image) {
                 vImuMeas.push_back(*it);
@@ -128,6 +149,24 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
             }
         }
     }
+
+    // 3. 检查 IMU 数据的数值
+    // 确保 IMU 时间戳严格递增
+    static double last_imu_t = -1.0;
+    std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
+
+    for(auto &p : vImuMeas) {
+        if (p.t <= last_imu_t) continue; // 跳过时间戳倒退或重复的点
+        
+        // 拦截极其离谱的 dt (例如 > 0.1s 甚至更大)
+        if (last_imu_t > 0 && (p.t - last_imu_t) > 0.1) {
+            RCLCPP_WARN(this->get_logger(), "IMU 数据断层! dt: %f", p.t - last_imu_t);
+        }
+        
+        vFilteredImu.push_back(p);
+        last_imu_t = p.t;
+    }
+    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)vImuMeas.size(), (int)vFilteredImu.size());
 
     cv::Mat im_gray = im;
 
@@ -145,14 +184,18 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     // 3. 核心调用：根据是否有 IMU 数据选择调用接口
     // 参考系：slam
     Sophus::SE3f Tcw; 
-    if (vImuMeas.empty()) {
+    if (!m_useIMU) {
         // 如果没有 IMU 数据，调用纯单目接口
         // 注意：如果你的系统初始化为 IMU_MONOCULAR，传空可能会报错或依然不就绪
         Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
     } else {
         // 只有有数据时才调用惯性接口
-        Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vImuMeas);
-        // Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
+        if (vFilteredImu.empty()){
+            RCLCPP_WARN(this->get_logger(), "警告: IMU 数据为空，但预期不应如此！");
+            return;
+        } else {
+            Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vFilteredImu);
+        }
     }
 
     if(Tcw.matrix().isZero() || Tcw.matrix().array().isNaN().any() || Tcw.matrix().array().isInf().any()) {
@@ -196,8 +239,12 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
             // 最好判断一下当前的模式是否支持速度获取
             try {
                 v_world = pTracker->mCurrentFrame.GetVelocity();
-                if(!v_world.isZero() && !v_world.array().isNaN().any()) {
+                Utility::PrintVector3f("v_world", v_world);
+                if(!v_world.isZero() && !v_world.array().isNaN().any() && v_world.norm() < 100.0f ) {
                     v_world_ptr = &v_world;
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "SLAM速度异常（过大或NaN），已拦截: [%f]", v_world.norm());
+                    v_world.setZero(); // 强制归零，防止污染 EKF
                 }
                 
             } catch (...) {
@@ -206,9 +253,9 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         }
     
         // 2. IMU：确保队列非空，参考系：base_link
-        if (!vImuMeas.empty())
+        if (!vFilteredImu.empty())
         {
-            imu_ptr = &vImuMeas.back();
+            imu_ptr = &vFilteredImu.back();
         }
 
         PublishData(Tcw, v_world_ptr, imu_ptr, stamp);
@@ -247,7 +294,7 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 {
     // --- DEBUG 打印 1: 进入发布函数 ---
     // 使用 THROTTLE 避免日志刷屏，每 1 秒输出一次
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose and TF...");
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose");
 
     // 1. 获取外参 Tbc (Camera to Body)
     // 建议：直接从 settings 获取对象，不要直接取地址
@@ -275,7 +322,7 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
     }
 
     // 打印当前位姿 (ROS 坐标系)
-    RCLCPP_DEBUG(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
+    RCLCPP_INFO(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
                  p_ros.x(), p_ros.y(), p_ros.z(), q_ros.x(), q_ros.y(), q_ros.z(), q_ros.w());
 
     // 5. 填充并发布 PoseStamped 消息(调试使用)
@@ -313,9 +360,9 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {
+        RCLCPP_INFO(this->get_logger(), "SLAM Tracking OK: Publishing Odometry...");
         Eigen::Vector3f v_body_ros;
         Utility::ConvertSLALinearVelocityToROS(v_world,R_cv,v_body_ros);
-
         // 2. 检查数值完整性 (防止 NaN 和 Inf)
         if (v_body_ros.array().isNaN().any() || v_body_ros.array().isInf().any()) {
             RCLCPP_ERROR(this->get_logger(), "速度转换异常：检测到 NaN 或 Inf！跳过发布。");
@@ -367,6 +414,7 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
         // ===============================
         if (lastPoint)
         {
+            Utility::PrintImuPoint("最后一个 IMU 点", lastPoint);
             // lastPoint->w 已经在 IMU / body 坐标系
             // 不需要 OpenCV → ROS 变换
             odom_msg.twist.twist.angular.x = lastPoint->w.x();
