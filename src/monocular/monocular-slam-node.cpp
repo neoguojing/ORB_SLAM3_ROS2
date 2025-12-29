@@ -302,17 +302,16 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
 void MonocularSlamNode::PublishMap2OdomTF(
     const Eigen::Vector3d& p_map_base,
     const Eigen::Quaterniond& q_map_base,
-    const rclcpp::Time& stamp,bool is_imu=true) 
+    const rclcpp::Time& stamp,
+    bool is_imu=true) 
 {
     try {
-        // 1. 将 Eigen 包装为 TF2 格式
-        tf2::Transform map_to_sensor;
-        map_to_sensor.setOrigin(tf2::Vector3(T_map_target.translation().x(), 
-                                            T_map_target.translation().y(), 
-                                            T_map_target.translation().z()));
-        map_to_sensor.setRotation(tf2::Quaternion(
-            T_map_target.unit_quaternion().x(), T_map_target.unit_quaternion().y(),
-            T_map_target.unit_quaternion().z(), T_map_target.unit_quaternion().w()));
+        // 1. 将输入的位姿包装为 tf2 格式
+        // 注意：tf2 使用 double 精度。如果传入的是 Eigen::Vector3f，请确保已 cast<double>()
+        tf2::Transform map_to_target;
+        map_to_target.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
+        map_to_target.setRotation(tf2::Quaternion(
+            q_map_base.x(), q_map_base.y(), q_map_base.z(), q_map_base.w()));
 
         // 2. 动态对齐到 base_link
         // 语义：确定 SLAM 算的到底是哪一部分，然后查表转到底盘中心

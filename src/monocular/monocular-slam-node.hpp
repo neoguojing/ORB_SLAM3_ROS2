@@ -50,7 +50,7 @@ private:
     void PublishImageData(const rclcpp::Time& stamp);
 
     void PublishMapPoints(const rclcpp::Time& stamp);
-    void PublishMap2OdomTF(const Eigen::Vector3d& p_slam_twc,const Eigen::Quaterniond& q_slam_twc,const rclcpp::Time& stamp,bool is_imu=true);
+    void PublishMap2OdomTF(const Eigen::Vector3d& p_slam_twc,const Eigen::Quaterniond& q_slam_twc,const rclcpp::Time& stamp,bool is_imu);
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
