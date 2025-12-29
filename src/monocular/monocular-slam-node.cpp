@@ -16,7 +16,9 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
 {
     m_SLAM = pSLAM;
     // --- 1. 初始化 TF 广播器 ---
-    m_tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
     // --- 2. 初始化发布者 ---
     // 使用默认的可靠通信 (QoS 10)
@@ -47,7 +49,8 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
     m_clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
 
     // 1. 初始化坐标变换矩阵 (m_R_vis_ros)
-    // 根据上述映射逻辑填充矩阵
+    // OpenCV (x-right, y-down, z-forward) -> ROS (x-forward, y-left, z-up)
+    // 这个矩阵也是它自身的逆 (R.transpose() == R)
     m_R_vis_ros << 0, 0, 1,  // ROS X = CV Z
                   -1, 0, 0,  // ROS Y = -CV X
                    0,-1, 0;  // ROS Z = -CV Y
@@ -290,6 +293,62 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
     m_debug_img_publisher->publish(*debug_msg);
 }
 
+/**
+ * @brief 发布 map -> odom 变换
+ * @param p_map_base SLAM输出的平移 (Map -> imu_link, 此时应已完成ROS轴转换)
+ * @param q_map_base SLAM输出的旋转 (Map -> imu_link, 此时应已完成ROS轴转换)
+ * @param stamp      图像帧对应的时间戳
+ */
+void MonocularSlamNode::PublishMap2OdomTF(
+    const Eigen::Vector3d& p_map_base,
+    const Eigen::Quaterniond& q_map_base,
+    const rclcpp::Time& stamp,bool is_imu=true) 
+{
+    try {
+        // 1. 将 Eigen 包装为 TF2 格式
+        tf2::Transform map_to_sensor;
+        map_to_sensor.setOrigin(tf2::Vector3(T_map_target.translation().x(), 
+                                            T_map_target.translation().y(), 
+                                            T_map_target.translation().z()));
+        map_to_sensor.setRotation(tf2::Quaternion(
+            T_map_target.unit_quaternion().x(), T_map_target.unit_quaternion().y(),
+            T_map_target.unit_quaternion().z(), T_map_target.unit_quaternion().w()));
+
+        // 2. 动态对齐到 base_link
+        // 语义：确定 SLAM 算的到底是哪一部分，然后查表转到底盘中心
+        std::string sensor_frame = is_imu ? "imu_link" : "camera_link_optical";
+        
+        // 获取 base_link -> sensor 的静态外参 (由 URDF 提供)
+        auto base_to_sensor_msg = tf_buffer_->lookupTransform("base_link", sensor_frame, tf2::TimePointZero);
+        tf2::Transform base_to_sensor;
+        tf2::fromMsg(base_to_sensor_msg.transform, base_to_sensor);
+
+        // T_map_base = T_map_sensor * T_base_sensor^-1
+        tf2::Transform map_to_base = map_to_sensor * base_to_sensor.inverse();
+
+        // 3. 获取里程计位姿 (odom -> base_link)
+        // 查找 stamp 时刻位姿，同步 SLAM 延迟
+        auto odom_to_base_msg = tf_buffer_->lookupTransform("odom", "base_link", stamp, rclcpp::Duration::from_seconds(0.05));
+        tf2::Transform odom_to_base;
+        tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
+
+        // 4. 反算补偏量: T_map_odom = T_map_base * T_odom_base^-1
+        tf2::Transform map_to_odom = map_to_base * odom_to_base.inverse();
+
+        // 5. 发布变换
+        geometry_msgs::msg::TransformStamped tf_msg;
+        tf_msg.header.stamp = stamp;
+        tf_msg.header.frame_id = "map";
+        tf_msg.child_frame_id = "odom";
+        tf_msg.transform = tf2::toMsg(map_to_odom);
+
+        tf_broadcaster_->sendTransform(tf_msg);
+
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "TF Sync Error: %s", ex.what());
+    }
+}
+
 void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp)
 {
     // --- DEBUG 打印 1: 进入发布函数 ---
@@ -340,23 +399,8 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
     pose_msg.pose.orientation.w = q_ros.w();
 
     m_pose_publisher->publish(pose_msg);
-
-    // --- 6. 广播 TF 变换 (map -> camera_link) ---
-    // 逻辑：SLAM 告诉系统，里程计原点在全局地图的什么位置
-    // geometry_msgs::msg::TransformStamped tf_msg;
-    // tf_msg.header.stamp = stamp;
-    // tf_msg.header.frame_id = "map";        // 父节点：全局地图
-    // tf_msg.child_frame_id = "base_link"; // 子节点：里程计原点
-
-    // tf_msg.transform.translation.x = p_ros.x();
-    // tf_msg.transform.translation.y = p_ros.y();
-    // tf_msg.transform.translation.z = p_ros.z();
-    // tf_msg.transform.rotation.x = q_ros.x();
-    // tf_msg.transform.rotation.y = q_ros.y();
-    // tf_msg.transform.rotation.z = q_ros.z();
-    // tf_msg.transform.rotation.w = q_ros.w();
-
-    // m_tf_broadcaster->sendTransform(tf_msg);
+    // 发布map -> odm tf
+    PublishMap2OdomTF(p_ros,q_ros,stamp,m_bTbcLoaded);
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {

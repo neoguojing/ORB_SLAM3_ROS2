@@ -12,6 +12,11 @@
 #include "nav_msgs/msg/odometry.hpp"
 
 #include "tf2_ros/transform_broadcaster.hpp"
+#include "tf2/LinearMath/Transform.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
+#include "tf2_ros/transform_listener.hpp"
+#include "tf2_ros/buffer.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #include "System.h"
 #include "Frame.h"
@@ -44,6 +49,7 @@ private:
     void PublishImageData(const rclcpp::Time& stamp);
 
     void PublishMapPoints(const rclcpp::Time& stamp);
+    void PublishMap2OdomTF(const Eigen::Vector3d& p_slam_twc,const Eigen::Quaterniond& q_slam_twc,const rclcpp::Time& stamp,bool is_imu=true);
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
@@ -54,9 +60,13 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr m_pose_publisher; // 2. 发布 Pose 给 Rviz 和你自己看
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_publisher;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_cloud_publisher;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
 
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr m_debug_img_publisher;
+
+    //tf 广播
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
     
     ORB_SLAM3::System* m_SLAM;

@@ -29,8 +29,8 @@ public:
    * @param Tcw        ORB-SLAM3 输出位姿，SE3f，camera_link，相机观察的运动姿态
    * @param m_R_vis_ros 固定旋转矩阵，用于 OPENCV → ROS 坐标轴转换
    * @param R_cv       输出：SLAM 坐标系下的相机光心怎么旋转，但用的是 OpenCV 轴方向约定
-   * @param p_ros      输出：SLAM 坐标系下的平移向量 (x,y,z)，使用ROS轴方向, map，slam观察的运动姿态
-   * @param q_ros      输出：SLAM 坐标系下的旋转四元数，使用ROS轴方向 map，slam观察的运动姿态
+   * @param p_ros      输出：SLAM 坐标系下的平移向量 (x,y,z)，使用ROS轴方向, map，slam观察的运动姿态 map -> imu-link or camera_link_optical
+   * @param q_ros      输出：SLAM 坐标系下的旋转四元数，使用ROS轴方向 map，slam观察的运动姿态 map -> imu-link or camera_link_optical
    * @param Tbc        可选 Camera->Body(SE3f) 外参，如果没有可传 nullptr
    *
    * 使用说明：
@@ -54,7 +54,7 @@ public:
       // Tcw: slam_world -> camera   参考系是camera
       // Twc: camera -> slam_world   参考系是slam_world
       Sophus::SE3f Twc = Tcw.inverse();
-      // 3. 如果存在 Camera->Body 外参，将位姿从相机系转换到机器人本体/IMU系
+      // 3. 如果存在 Camera->IMU 外参，将位姿从相机系转换到机器人本体/IMU系
       // 将slam下的相机位置转换为body的位置
       Sophus::SE3f Twb;
       if (Tbc) {
@@ -62,11 +62,12 @@ public:
         std::stringstream ss;
         ss << "\n" << Tbc->matrix(); // 获取 4x4 矩阵
         RCLCPP_INFO(logger, "--- 当前加载的外参 Tbc (Body to Camera) ---%s", ss.str().c_str());
-
-        Twb = Twc * (*Tbc);            // world -> body
+        // / 场景 A: 存在外参，Twb 现在代表 Map -> imu_link (Body)
+        Twb = Twc * (*Tbc);
         RCLCPP_INFO(logger, "Step 3: Tbc multiply done");
       } else {
           Twb = Twc;                     // 没有外参就当 camera == body
+          // 此时输出的 p_ros/q_ros 实际上是 camera_link_optical 在 map 下的位姿
       }
       // 2. 提取slam_world 坐标系下的平移和旋转
       Eigen::Vector3f p_cv = Twb.translation();     // 可以理解为slam坐标系下相机光心的“位移向量” 但用的是 OpenCV 轴方向约定
