@@ -399,7 +399,7 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
 
     m_pose_publisher->publish(pose_msg);
     // 发布map -> odm tf
-    PublishMap2OdomTF(p_ros,q_ros,stamp,m_bTbcLoaded);
+    this->PublishMap2OdomTF(p_ros.cast<double>(),q_ros.cast<double>(),stamp,m_bTbcLoaded);
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {
