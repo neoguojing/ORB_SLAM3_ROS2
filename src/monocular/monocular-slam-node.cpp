@@ -308,9 +308,9 @@ void MonocularSlamNode::PublishMap2OdomTF(
     try {
         // 1. 将输入的位姿包装为 tf2 格式
         // 注意：tf2 使用 double 精度。如果传入的是 Eigen::Vector3f，请确保已 cast<double>()
-        tf2::Transform map_to_target;
-        map_to_target.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
-        map_to_target.setRotation(tf2::Quaternion(
+        tf2::Transform map_to_sensor;
+        map_to_sensor.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
+        map_to_sensor.setRotation(tf2::Quaternion(
             q_map_base.x(), q_map_base.y(), q_map_base.z(), q_map_base.w()));
 
         // 2. 动态对齐到 base_link
