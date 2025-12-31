@@ -389,7 +389,7 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
         // 发布 map -> baselink
         this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         // 发布 odm
-        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv,v_world,lastPoint, stamp);
+        this->PublishOdm(R_cv,v_world,lastPoint, stamp);
         // 发布 pos
         this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         
@@ -468,8 +468,7 @@ void MonocularSlamNode::PublishMap2OdomTF(
     }
 }
 
-void MonocularSlamNode::PublishOdm(const Eigen::Vector3d& p_ros,
-    const Eigen::Quaterniond& q_ros,
+void MonocularSlamNode::PublishOdm(
     const Eigen::Matrix3f& R_cv,
     const Eigen::Vector3f* v_world,
     const ORB_SLAM3::IMU::Point* lastPoint,
