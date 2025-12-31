@@ -346,7 +346,8 @@ Sophus::SE3f MonocularSlamNode::GetStaticTransformAsSophus(const std::string& ta
     }
 }
 
-void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp) {
+void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp,
+    const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint) {
     Eigen::Vector3f p_base_ros;
     Eigen::Quaternionf q_base_ros;
     Eigen::Matrix3f R_cv;
