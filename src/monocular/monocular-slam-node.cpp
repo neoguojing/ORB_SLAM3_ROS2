@@ -41,9 +41,11 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
         "/camera/image_raw/compressed", 10,
         std::bind(&MonocularSlamNode::GrabCompressedImage, this, std::placeholders::_1));
 
-    m_imu_subscriber = this->create_subscription<sensor_msgs::msg::Imu>(
-        "/imu/data_raw", 10,
-        std::bind(&MonocularSlamNode::GrabImu, this, std::placeholders::_1));
+    if (m_useIMU) {
+        m_imu_subscriber = this->create_subscription<sensor_msgs::msg::Imu>(
+            "/imu/data_raw", 10,
+            std::bind(&MonocularSlamNode::GrabImu, this, std::placeholders::_1));
+    }
 
     // --- 4. 初始化 CLAHE 优化器 (之前讨论的优化) ---
     m_clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
@@ -74,7 +76,7 @@ MonocularSlamNode::~MonocularSlamNode()
 }
 
 void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
-{
+{   
     std::lock_guard<std::mutex> lock(m_mutex_imu);
     // 将 ROS IMU 消息转换为 ORB_SLAM3 的 IMU 点
     m_imu_buffer.push_back(ORB_SLAM3::IMU::Point(
@@ -275,7 +277,7 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
 void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
 {
     // 1. 获取所有地图点
-    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetTrackedMapPoints(); // 只获取当前看到的点，或者使用 GetAllMapPoints()
+    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetAllMapPoints(); // 只获取当前看到的点，或者使用 GetTrackedMapPoints
     if (vpMapPoints.empty()) return;
 
     auto cloud_msg = sensor_msgs::msg::PointCloud2();
@@ -287,12 +289,15 @@ void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
 
     // 预过滤有效点
     std::vector<Eigen::Vector3f> valid_points;
+    valid_points.reserve(vpMapPoints.size());
     for (auto pMP : vpMapPoints) {
         if (pMP && !pMP->isBad()) {
             // 使用与 Pose 统一的转换矩阵
             // 可选：高度过滤（假设 z 是高度）
             // if (pos_ros.z() < 0.05 || pos_ros.z() > 2.0) continue;
-            valid_points.push_back(m_R_vis_ros * pMP->GetWorldPos());
+            Eigen::Vector3f pos = m_R_vis_ros * pMP->GetWorldPos();
+            if (pos.norm() > 50.0f) continue;
+            valid_points.push_back(pos);
         }
     }
 
@@ -384,7 +389,7 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
         // 发布 map -> baselink
         this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         // 发布 odm
-        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv, stamp);
+        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv,v_world,lastPoint stamp);
         // 发布 pos
         this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         
