@@ -108,6 +108,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 {
     // auto avg = cv::mean(im);
     // RCLCPP_INFO(this->get_logger(), "图像均值: %.2f", avg[0]);
+    static double lost_start_time = -1;
 
     // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
@@ -223,6 +224,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 4. 检查状态并发布
     int state = m_SLAM->GetTrackingState();
+    double now = node->now().seconds();
     
     // --- DEBUG 打印 5: SLAM 结果 ---
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
@@ -230,6 +232,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 4. 检查状态并发布
     if (state == ORB_SLAM3::Tracking::OK) {
+        lost_start_time = -1;
         // 1. 获取 SLAM 世界系下的速度
         Eigen::Vector3f v_world;
         const Eigen::Vector3f* v_world_ptr = nullptr;
@@ -270,6 +273,14 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
         }
     } else if (state == ORB_SLAM3::Tracking::LOST) {
         RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", state);
+        if (lost_start_time < 0)
+            lost_start_time = now;
+        
+        if (now - lost_start_time > 2.0) {
+            m_SLAM->ResetActiveMap();
+            lost_start_time = -1;
+        }
+
     } else if (state == ORB_SLAM3::Tracking::NOT_INITIALIZED) {
         // 单目 SLAM 必须先初始化
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
