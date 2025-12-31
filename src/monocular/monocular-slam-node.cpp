@@ -277,7 +277,7 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
 void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
 {
     // 1. 获取所有地图点
-    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetAllMapPoints(); // 只获取当前看到的点，或者使用 GetTrackedMapPoints
+    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetTrackedMapPoints();
     if (vpMapPoints.empty()) return;
 
     auto cloud_msg = sensor_msgs::msg::PointCloud2();
@@ -360,11 +360,11 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
     try {
         // 根据模式获取对应的外参，缺失会抛出异常跳转到 catch
         if (m_bTbcLoaded) {
-            Sophus::SE3f T_base_imu = GetStaticTransformAsSophus("imu_link");
-            ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, &m_Tbc, &T_base_imu, nullptr);
+            Sophus::SE3f T_base_imu = this->GetStaticTransformAsSophus("imu_link");
+            Utility::ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, &m_Tbc, &T_base_imu, nullptr);
         } else {
-            Sophus::SE3f T_base_cam = GetStaticTransformAsSophus("camera_link_optical");
-            ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, nullptr, nullptr, &T_base_cam);
+            Sophus::SE3f T_base_cam = this->GetStaticTransformAsSophus("camera_link_optical");
+            Utility::ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, nullptr, nullptr, &T_base_cam);
         }
 
         // --- 修复点：双重归一化保险 ---
@@ -389,7 +389,7 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
         // 发布 map -> baselink
         this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         // 发布 odm
-        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv,v_world,lastPoint stamp);
+        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv,v_world,lastPoint, stamp);
         // 发布 pos
         this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         

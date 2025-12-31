@@ -55,13 +55,14 @@ private:
     void HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint);
 
     void PublishMap2OdomTF(const Eigen::Vector3d& p_map_base,const Eigen::Quaterniond& q_map_base,const rclcpp::Time& stamp);
-    void PublishPos(const Eigen::Vector3d& p_map_base,const Eigen::Quaterniond& q_map_base,const rclcpp::Time& stamp);
     void PublishOdm(const Eigen::Vector3d& p_ros,
         const Eigen::Quaterniond& q_ros,
         const Eigen::Matrix3f& R_cv,
         const Eigen::Vector3f* v_world,
         const ORB_SLAM3::IMU::Point* lastPoint,
         const rclcpp::Time& stamp);
+    void PublishPos(const Eigen::Vector3d& p_map_base,const Eigen::Quaterniond& q_map_base,const rclcpp::Time& stamp);
+    
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
