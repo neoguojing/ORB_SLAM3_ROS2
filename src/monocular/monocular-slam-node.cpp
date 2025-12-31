@@ -234,10 +234,9 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
         // 核心数据分发 (之前讨论的 map->odom 发布就在这里面)
         this->HandleSlamOutput(Tcw, stamp, has_vel ? &v_world : nullptr, imu_ptr);
-
+        this->PublishMapPoints(stamp);
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) {
-            this->PublishMapPoints(stamp);
             this->PublishImageData(stamp);
         }
     } else if (state == ORB_SLAM3::Tracking::LOST) {
