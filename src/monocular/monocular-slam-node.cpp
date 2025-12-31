@@ -11,10 +11,11 @@
 using std::placeholders::_1;
 
 
-MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
+MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU)
 :   Node("ORB_SLAM3_ROS2")
 {
     m_SLAM = pSLAM;
+    m_useIMU = useIMU;
     // --- 1. 初始化 TF 广播器 ---
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -60,12 +61,6 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
     RCLCPP_INFO(this->get_logger(), "ORB-SLAM3 节点初始化完成，等待传感器数据...");
 }
 
-MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU)
-:  MonocularSlamNode(pSLAM)
-{
-    m_useIMU = useIMU;
-}
-
 MonocularSlamNode::~MonocularSlamNode()
 {
     // Stop all threads
@@ -77,6 +72,12 @@ MonocularSlamNode::~MonocularSlamNode()
 
 void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
 {   
+    // 检查是否有无效数值
+    if (std::isnan(msg->linear_acceleration.x) || std::isnan(msg->angular_velocity.x)) {
+        RCLCPP_ERROR(this->get_logger(), "收到无效的 IMU 数据 (NaN)!");
+        return;
+    }
+    
     std::lock_guard<std::mutex> lock(m_mutex_imu);
     // 将 ROS IMU 消息转换为 ORB_SLAM3 的 IMU 点
     m_imu_buffer.push_back(ORB_SLAM3::IMU::Point(
@@ -84,6 +85,14 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
         msg->angular_velocity.x,    msg->angular_velocity.y,    msg->angular_velocity.z,
         Utility::StampToSec(msg->header.stamp) // 需实现时间戳转换工具
     ));
+    // 4. 修正日志信息：打印加速度和角速度信息，而不是图像信息
+    // 使用 THROTTLE 避免日志刷新过快影响性能（IMU 通常频率很高，如 200Hz+）
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
+        "收到 IMU 数据! 时间戳: %.3f, 加速度: [%.2f, %.2f, %.2f]", 
+        Utility::StampToSec(msg->header.stamp), 
+        msg->linear_acceleration.x, 
+        msg->linear_acceleration.y, 
+        msg->linear_acceleration.z);
 }
 
 void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
@@ -115,8 +124,12 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
     std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
     std::lock_guard<std::mutex> lock(m_mutex_imu);
 
-    if (m_imu_buffer.empty() || m_imu_buffer.back().t < t_image) {
+    if (m_imu_buffer.empty()) {
         return {};
+    }
+
+    if (m_imu_buffer.back().t < t_image - 0.01) {
+        return {}; 
     }
 
     double last_imu_t = -1.0;
@@ -133,10 +146,11 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
         last_imu_t = it->t;
     }
 
-    // 保留最后一个 IMU 作为下一次预积分起点
-    if (!vFilteredImu.empty()) {
-        auto last = std::prev(it);
-        m_imu_buffer.erase(m_imu_buffer.begin(), last);
+    // 关键修正：我们需要保留 it 之前的那个点，作为下一次提取的起点（重叠一个点）
+    // 或者至少要保证下次提取时，能连接上本次的结束点
+    if (it != m_imu_buffer.begin()) {
+        // 删除已经处理过的点，但保留最后一个点，因为它的时间戳可能正好等于或最接近下一帧的起点
+        m_imu_buffer.erase(m_imu_buffer.begin(), std::prev(it));
     }
 
     RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)m_imu_buffer.size(), (int)vFilteredImu.size());
@@ -197,7 +211,10 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 1. 同步 IMU
     std::vector<ORB_SLAM3::IMU::Point> vImu = m_useIMU ? this->SyncImuData(t_image) : std::vector<ORB_SLAM3::IMU::Point>();
-    if (m_useIMU && vImu.empty()) return;
+    if (m_useIMU && vImu.size() < 2) {
+        RCLCPP_WARN(this->get_logger(), "IMU 数据不足 (%ld 个)，跳过该帧", vImu.size());
+        return;
+    }
 
     // 2. 跟踪
     Sophus::SE3f Tcw = ExecuteTracking(im, t_image, vImu);
