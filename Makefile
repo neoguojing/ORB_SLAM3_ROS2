@@ -13,7 +13,8 @@ all: build
 # 1. 编译项目
 build:
 	@echo "开始编译 ROS 2 节点..."
-	cd $(WS_PATH) && colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+	cd $(WS_PATH) && \
+	colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
 	@echo "编译完成。"
 
 # 2. 运行单目节点
@@ -21,6 +22,7 @@ build:
 run_mono:
 	@echo "启动 ORB-SLAM3 单目节点..."
 	bash -c "source $(WS_PATH)/install/setup.bash && \
+	tar -zxvf $(PROJECT_ROOT)/vocabulary/ORBvoc.txt.tar.gz && \
 	ros2 run orbslam3 mono $(VOC_PATH) $(YAML_PATH)"
 
 # 3. 清理编译产物
