@@ -45,12 +45,23 @@ private:
 
     void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg);
 
+    std::vector<ORB_SLAM3::IMU::Point> SyncImuData(double t_image);
+    Sophus::SE3f ExecuteTracking(const cv::Mat& im, double t_image, const std::vector<ORB_SLAM3::IMU::Point>& vImu);
+    bool ExtractMotionInfo(Eigen::Vector3f& v_world);
     // --- 数据处理与发布 ---
-    void PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp);
     void PublishImageData(const rclcpp::Time& stamp);
-
     void PublishMapPoints(const rclcpp::Time& stamp);
-    void PublishMap2OdomTF(const Eigen::Vector3d& p_slam_twc,const Eigen::Quaterniond& q_slam_twc,const rclcpp::Time& stamp,bool is_imu);
+    Sophus::SE3f GetStaticTransformAsSophus(const std::string& target_frame);
+    void HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint);
+
+    void PublishMap2OdomTF(const Eigen::Vector3d& p_map_base,const Eigen::Quaterniond& q_map_base,const rclcpp::Time& stamp);
+    void PublishPos(const Eigen::Vector3d& p_map_base,const Eigen::Quaterniond& q_map_base,const rclcpp::Time& stamp);
+    void PublishOdm(const Eigen::Vector3d& p_ros,
+        const Eigen::Quaterniond& q_ros,
+        const Eigen::Matrix3f& R_cv,
+        const Eigen::Vector3f* v_world,
+        const ORB_SLAM3::IMU::Point* lastPoint,
+        const rclcpp::Time& stamp);
 
     // 图片订阅
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr m_image_subscriber;
@@ -83,6 +94,9 @@ private:
     // 根据 REP-103 标准进行轴映射
     Eigen::Matrix3f m_R_vis_ros;
     int m_frame_count = 0;
+    double m_lost_start_time = -1.0;
+    // 存储上一次 SLAM 跟踪的纯耗时（单位：秒）
+    double m_last_elapsed = 0.0;
     Sophus::SE3f m_Tbc;
     bool m_bTbcLoaded = false;
     bool m_useIMU = false;

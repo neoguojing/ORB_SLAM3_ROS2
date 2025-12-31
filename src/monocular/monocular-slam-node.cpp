@@ -104,16 +104,86 @@ void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg){
     }
 }
 
+/**
+ * @brief 提取并对齐 IMU 数据
+ * @return 过滤后的 IMU 测量矢量。如果数据未就绪则返回空。
+ */
+std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image)
+{
+    std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
+    std::lock_guard<std::mutex> lock(m_mutex_imu);
+
+    if (m_imu_buffer.empty() || m_imu_buffer.back().t < t_image) {
+        return {};
+    }
+
+    double last_imu_t = -1.0;
+    constexpr double MAX_IMU_DT = 0.02; // 50Hz
+
+    auto it = m_imu_buffer.begin();
+    for (; it != m_imu_buffer.end() && it->t <= t_image; ++it) {
+        if (last_imu_t > 0 && (it->t - last_imu_t) > MAX_IMU_DT) {
+            RCLCPP_WARN(this->get_logger(),
+                        "IMU time gap detected! dt = %.3f s",
+                        it->t - last_imu_t);
+        }
+        vFilteredImu.push_back(*it);
+        last_imu_t = it->t;
+    }
+
+    // 保留最后一个 IMU 作为下一次预积分起点
+    if (!vFilteredImu.empty()) {
+        auto last = std::prev(it);
+        m_imu_buffer.erase(m_imu_buffer.begin(), last);
+    }
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)vImuMeas.size(), (int)vFilteredImu.size());
+    return vFilteredImu;
+}
+
+/**
+ * @brief 执行 SLAM 跟踪
+ * @return 得到的相机位姿 Tcw
+ */
+Sophus::SE3f MonocularSlamNode::ExecuteTracking(const cv::Mat& im, double t_image, const std::vector<ORB_SLAM3::IMU::Point>& vImu) {
+    Sophus::SE3f Tcw;
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    if (!m_useIMU) {
+        Tcw = m_SLAM->TrackMonocular(im, t_image);
+    } else {
+        Tcw = m_SLAM->TrackMonocular(im, t_image, vImu);
+    }
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    m_last_elapsed = std::chrono::duration<double>(t2 - t1).count();
+
+    return Tcw;
+}
+
+/**
+ * @brief 提取当前帧的运动状态（速度等）
+ */
+bool MonocularSlamNode::ExtractMotionInfo(Eigen::Vector3f& v_world) {
+    ORB_SLAM3::Tracking* pTracker = m_SLAM->GetTracker();
+    if (pTracker && m_useIMU) {
+        v_world = pTracker->mCurrentFrame.GetVelocity();
+        // 阈值检查：超过 20/s 的速度通常是初始化瞬间的数值爆炸
+        if (v_world.array().isFinite().all() && v_world.norm() < 20.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
 void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stamp)
 {
-    // auto avg = cv::mean(im);
-    // RCLCPP_INFO(this->get_logger(), "图像均值: %.2f", avg[0]);
-    static double lost_start_time = -1;
-
     // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
         "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
         Utility::StampToSec(stamp), im.cols, im.rows);
+
     // 尝试获取Tbc
     if (!m_bTbcLoaded && m_SLAM->GetSetting()) {
         m_Tbc = m_SLAM->GetSetting()->Tbc();
@@ -123,85 +193,13 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     double t_image = Utility::StampToSec(stamp);
 
-    // 1. 提取缓冲区中所有早于当前图像时间的 IMU 数据
-    // 1. 增加频率监控
-    static double last_t_imu = -1;
-    double current_t_imu = Utility::StampToSec(stamp);
-    if(last_t_imu > 0 && (current_t_imu - last_t_imu) > 0.05) {
-        RCLCPP_WARN(this->get_logger(), "IMU 数据丢包严重! dt: %f", current_t_imu - last_t_imu);
-    }
-    last_t_imu = current_t_imu;
+    // 1. 同步 IMU
+    std::vector<ORB_SLAM3::IMU::Point> vImu = m_useIMU ? this->SyncImuData(t_image) : std::vector<ORB_SLAM3::IMU::Point>();
+    if (m_useIMU && vImu.empty()) return;
 
-    std::vector<ORB_SLAM3::IMU::Point> vImuMeas;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex_imu);
-        if (!m_imu_buffer.empty()) {
-            // 关键：确保 IMU 数据已经覆盖了图像时间戳
-            if (m_imu_buffer.back().t < t_image) {
-                RCLCPP_INFO(this->get_logger(), "等待 IMU 数据到达当前图像时间...");
-                return; 
-            }
-            auto it = m_imu_buffer.begin();
-            while (it != m_imu_buffer.end() && it->t <= t_image) {
-                vImuMeas.push_back(*it);
-                it++;
-            }
-            // 删除已经传递给 SLAM 的旧数据，保留可能属于下一帧的数据
-            // 注意：通常保留最后一个点作为下一帧的起点
-            if (it != m_imu_buffer.begin()) {
-                m_imu_buffer.erase(m_imu_buffer.begin(), it - 1);
-            }
-        }
-    }
-
-    // 3. 检查 IMU 数据的数值
-    // 确保 IMU 时间戳严格递增
-    static double last_imu_t = -1.0;
-    std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
-
-    for(auto &p : vImuMeas) {
-        if (p.t <= last_imu_t) continue; // 跳过时间戳倒退或重复的点
-        
-        // 拦截极其离谱的 dt (例如 > 0.1s 甚至更大)
-        if (last_imu_t > 0 && (p.t - last_imu_t) > 0.1) {
-            RCLCPP_WARN(this->get_logger(), "IMU 数据断层! dt: %f", p.t - last_imu_t);
-        }
-        
-        vFilteredImu.push_back(p);
-        last_imu_t = p.t;
-    }
-    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)vImuMeas.size(), (int)vFilteredImu.size());
-
-    cv::Mat im_gray = im;
-
-    // 1. 如果输入是彩色图，转换为灰度图 (ORB-SLAM3 核心要求)
-    // if (im_gray.channels() == 3) {
-    //     cv::cvtColor(im_gray, im_gray, cv::COLOR_BGR2GRAY);
-    // }
-
-    // 这里可以加入你 main 里的 clahe->apply(...)
-    // m_clahe->apply(im_gray, im_gray);
-
-    // 3. 核心调用：单目惯性跟踪
-    // --- DEBUG 打印 4: SLAM 开始执行（记录耗时） ---
-    auto t1 = std::chrono::high_resolution_clock::now();
-    // 3. 核心调用：根据是否有 IMU 数据选择调用接口
-    // 参考系：slam
-    Sophus::SE3f Tcw; 
-    if (!m_useIMU) {
-        // 如果没有 IMU 数据，调用纯单目接口
-        // 注意：如果你的系统初始化为 IMU_MONOCULAR，传空可能会报错或依然不就绪
-        Tcw = m_SLAM->TrackMonocular(im_gray, t_image);
-    } else {
-        // 只有有数据时才调用惯性接口
-        if (vFilteredImu.empty()){
-            RCLCPP_WARN(this->get_logger(), "警告: IMU 数据为空，但预期不应如此！");
-            return;
-        } else {
-            Tcw = m_SLAM->TrackMonocular(im_gray, t_image, vFilteredImu);
-        }
-    }
-
+    // 2. 跟踪
+    Sophus::SE3f Tcw = ExecuteTracking(im, t_image, vImu);
+    
     if(Tcw.matrix().isZero() || Tcw.matrix().array().isNaN().any() || Tcw.matrix().array().isInf().any()) {
         // 如果返回的是空位姿，说明这一帧在预处理阶段就被丢弃了
         std::stringstream ss;
@@ -218,67 +216,36 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
     // 获取当前帧的特征点数量（需要包含对应的头文件）
     int nFeatures = m_SLAM->GetTrackedKeyPointsUn().size(); 
     RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前帧提取到的特征点数: %d", nFeatures);
-
-    auto t2 = std::chrono::high_resolution_clock::now();
-    double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
-
+    
     // 4. 检查状态并发布
     int state = m_SLAM->GetTrackingState();
-    double now = this->now().seconds();
-    
-    // --- DEBUG 打印 5: SLAM 结果 ---
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
-        "SLAM 跟踪状态: %d (9=OK), 耗时: %.4f 秒", state, elapsed);
-
-    // 4. 检查状态并发布
-    if (state == ORB_SLAM3::Tracking::OK) {
-        lost_start_time = -1;
-        // 1. 获取 SLAM 世界系下的速度
-        Eigen::Vector3f v_world;
-        const Eigen::Vector3f* v_world_ptr = nullptr;
-        const ORB_SLAM3::IMU::Point* imu_ptr = nullptr;
-
-        // 获取 Tracker 指针
-        ORB_SLAM3::Tracking* pTracker = m_SLAM->GetTracker();
-        if(pTracker) {
-            // 关键：不要拷贝 Frame，只拷贝 Vector3f（这是基本类型，拷贝极快且相对安全）
-            // 最好判断一下当前的模式是否支持速度获取
-            try {
-                v_world = pTracker->mCurrentFrame.GetVelocity();
-                Utility::PrintVector3f("v_world", v_world);
-                if(!v_world.isZero() && !v_world.array().isNaN().any() && v_world.norm() < 100.0f ) {
-                    v_world_ptr = &v_world;
-                } else {
-                    RCLCPP_WARN(this->get_logger(), "SLAM速度异常（过大或NaN），已拦截: [%f]", v_world.norm());
-                    v_world.setZero(); // 强制归零，防止污染 EKF
-                }
-                
-            } catch (...) {
-                RCLCPP_ERROR(this->get_logger(), "读取速度失败");
-            }
-        }
+        "SLAM 跟踪状态: %d (9=OK), 耗时: %.4f 秒", state, m_last_elapsed);
     
-        // 2. IMU：确保队列非空，参考系：base_link
-        if (!vFilteredImu.empty())
-        {
-            imu_ptr = &vFilteredImu.back();
-        }
+    double now = this->now().seconds();
+    if (state == ORB_SLAM3::Tracking::OK) {
+        m_lost_start_time = -1;
+        
+        Eigen::Vector3f v_world;
+        bool has_vel = this->ExtractMotionInfo(v_world);
+        const ORB_SLAM3::IMU::Point* imu_ptr = vImu.empty() ? nullptr : &vImu.back();
 
-        PublishData(Tcw, v_world_ptr, imu_ptr, stamp);
+        // 核心数据分发 (之前讨论的 map->odom 发布就在这里面)
+        this->HandleSlamOutput(Tcw, stamp, has_vel ? &v_world : nullptr, imu_ptr);
 
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) {
-            PublishMapPoints(stamp);
-            PublishImageData(stamp);
+            this->PublishMapPoints(stamp);
+            this->PublishImageData(stamp);
         }
     } else if (state == ORB_SLAM3::Tracking::LOST) {
         RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", state);
-        if (lost_start_time < 0)
-            lost_start_time = now;
+        if (m_lost_start_time < 0)
+            m_lost_start_time = now;
         
-        if (now - lost_start_time > 2.0) {
+        if (now - m_lost_start_time > 2.0) {
             m_SLAM->ResetActiveMap();
-            lost_start_time = -1;
+            m_lost_start_time = -1;
         }
 
     } else if (state == ORB_SLAM3::Tracking::NOT_INITIALIZED) {
@@ -304,113 +271,204 @@ void MonocularSlamNode::PublishImageData(const rclcpp::Time& stamp){
     m_debug_img_publisher->publish(*debug_msg);
 }
 
+
+void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
+{
+    // 1. 获取所有地图点
+    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetTrackedMapPoints(); // 只获取当前看到的点，或者使用 GetAllMapPoints()
+    if (vpMapPoints.empty()) return;
+
+    auto cloud_msg = sensor_msgs::msg::PointCloud2();
+    cloud_msg.header.stamp = stamp;
+    cloud_msg.header.frame_id = "map"; // 地图点是在 map 坐标系下的
+
+    sensor_msgs::PointCloud2Modifier modifier(cloud_msg);
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+
+    // 预过滤有效点
+    std::vector<Eigen::Vector3f> valid_points;
+    for (auto pMP : vpMapPoints) {
+        if (pMP && !pMP->isBad()) {
+            // 使用与 Pose 统一的转换矩阵
+            // 可选：高度过滤（假设 z 是高度）
+            // if (pos_ros.z() < 0.05 || pos_ros.z() > 2.0) continue;
+            valid_points.push_back(m_R_vis_ros * pMP->GetWorldPos());
+        }
+    }
+
+    modifier.resize(valid_points.size());
+    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+
+    for (const auto& pos : valid_points) {
+        *iter_x = pos.x();
+        *iter_y = pos.y();
+        *iter_z = pos.z();
+        ++iter_x; ++iter_y; ++iter_z;
+    }
+
+    m_cloud_publisher->publish(cloud_msg);
+}
+
 /**
- * @brief 发布 map -> odom 变换
- * @param p_map_base SLAM输出的平移 (Map -> imu_link, 此时应已完成ROS轴转换)
- * @param q_map_base SLAM输出的旋转 (Map -> imu_link, 此时应已完成ROS轴转换)
- * @param stamp      图像帧对应的时间戳
+ * @brief 从 TF 树中查询静态外参 (base_link -> sensor)
+ * @throws std::runtime_error 如果外参缺失，强制抛出异常，防止静默失败
+ */
+Sophus::SE3f MonocularSlamNode::GetStaticTransformAsSophus(const std::string& target_frame) {
+    try {
+        // 使用 TimePointZero 获取最新静态变换，不引入时间戳抖动
+        auto msg = tf_buffer_->lookupTransform("base_link", target_frame, tf2::TimePointZero);
+        
+        // 注意：tf2 旋转分量顺序是 x, y, z, w
+        Eigen::Quaternionf q(
+            msg.transform.rotation.w,
+            msg.transform.rotation.x,
+            msg.transform.rotation.y,
+            msg.transform.rotation.z);
+            
+        Eigen::Vector3f t(
+            msg.transform.translation.x,
+            msg.transform.translation.y,
+            msg.transform.translation.z);
+
+        return Sophus::SE3f(q, t);
+    } catch (const tf2::TransformException& ex) {
+        // 1. 记录 FATAL 级别日志（比 ERROR 更严重）
+        RCLCPP_FATAL(
+            this->get_logger(), 
+            "CRITICAL ERROR: Static transform 'base_link' -> '%s' is MISSING! "
+            "SLAM pose alignment is impossible without this. Error: %s", 
+            target_frame.c_str(), ex.what());
+        
+        // 2. 强制抛出异常，不再返回单位阵
+        throw std::runtime_error("Missing essential static TF: base_link to " + target_frame);
+    }
+}
+
+void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::Time& stamp) {
+    Eigen::Vector3f p_base_ros;
+    Eigen::Quaternionf q_base_ros;
+    Eigen::Matrix3f R_cv;
+
+    try {
+        // 根据模式获取对应的外参，缺失会抛出异常跳转到 catch
+        if (m_bTbcLoaded) {
+            Sophus::SE3f T_base_imu = GetStaticTransformAsSophus("imu_link");
+            ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, &m_Tbc, &T_base_imu, nullptr);
+        } else {
+            Sophus::SE3f T_base_cam = GetStaticTransformAsSophus("camera_link_optical");
+            ConvertSLAMPoseToBaseLink(Tcw, p_base_ros, q_base_ros,R_cv, nullptr, nullptr, &T_base_cam);
+        }
+
+        // --- 修复点：双重归一化保险 ---
+        // 虽然 Convert 内部已经 normalize，但在发布前再次保险，彻底杜绝 float 累积漂移导致的 TF 失真
+        q_base_ros.normalize();
+
+        // 3. 检查平移向量 p_ros (是否包含非数字或无穷大)
+        if (p_base_ros.array().isNaN().any() || p_base_ros.array().isInf().any()) {
+            RCLCPP_ERROR(this->get_logger(), "有效性检查失败：p_ros 包含 NaN 或 Inf!");
+        }
+
+        // 4. 检查四元数 q_ros (确保已归一化，且不包含非法值)
+        if (std::abs(q_base_ros.norm() - 1.0f) > 0.1) {
+            // 如果模长偏离 1 太远，说明旋转矩阵转换出错
+            RCLCPP_ERROR(this->get_logger(), "有效性检查失败：四元数未归一化 (norm: %.2f)", q_base_ros.norm());
+        }
+
+        // 打印当前位姿 (ROS 坐标系)
+        RCLCPP_INFO(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
+                    p_base_ros.x(), p_base_ros.y(), p_base_ros.z(), q_base_ros.x(), q_base_ros.y(), q_base_ros.z(), q_base_ros.w());
+
+        // 发布 map -> baselink
+        this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
+        // 发布 odm
+        this->PublishOdm(p_base_ros.cast<double>(), q_base_ros.cast<double>(),R_cv, stamp);
+        // 发布 pos
+        this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
+        
+
+
+    } catch (const std::exception& e) {
+        // 捕获 GetStaticTransformAsSophus 抛出的异常，防止节点崩溃，但通过日志警告
+        RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000, 
+            "Slam Pose Processing Aborted: %s", e.what());
+    }
+}
+
+/**
+ * @brief 发布 map -> odom 变换，消除里程计漂移
+ * @param p_map_base SLAM计算出的 base_link 在 map 系下的平移
+ * @param q_map_base SLAM计算出的 base_link 在 map 系下的旋转
+ * @param stamp      当前图像帧的时间戳
  */
 void MonocularSlamNode::PublishMap2OdomTF(
     const Eigen::Vector3d& p_map_base,
     const Eigen::Quaterniond& q_map_base,
-    const rclcpp::Time& stamp,
-    bool is_imu=true) 
+    const rclcpp::Time& stamp) 
 {
     try {
-        // 1. 将输入的位姿包装为 tf2 格式
-        // 注意：tf2 使用 double 精度。如果传入的是 Eigen::Vector3f，请确保已 cast<double>()
-        tf2::Transform map_to_sensor;
-        map_to_sensor.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
-        map_to_sensor.setRotation(tf2::Quaternion(
-            q_map_base.x(), q_map_base.y(), q_map_base.z(), q_map_base.w()));
-
-        // 2. 动态对齐到 base_link
-        // 语义：确定 SLAM 算的到底是哪一部分，然后查表转到底盘中心
-        std::string sensor_frame = is_imu ? "imu_link" : "camera_link_optical";
+        // 1. 封装 SLAM 输出的 Map -> Base 位姿
+        tf2::Transform map_to_base;
+        map_to_base.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
         
-        // 获取 base_link -> sensor 的静态外参 (由 URDF 提供)
-        auto base_to_sensor_msg = tf_buffer_->lookupTransform("base_link", sensor_frame, tf2::TimePointZero);
-        tf2::Transform base_to_sensor;
-        tf2::fromMsg(base_to_sensor_msg.transform, base_to_sensor);
+        // 再次确保归一化，防止 tf2 内部矩阵检查失败
+        tf2::Quaternion q_tf(q_map_base.x(), q_map_base.y(), q_map_base.z(), q_map_base.w());
+        q_tf.normalize();
+        map_to_base.setRotation(q_tf);
 
-        // T_map_base = T_map_sensor * T_base_sensor^-1
-        tf2::Transform map_to_base = map_to_sensor * base_to_sensor.inverse();
+        // 2. 获取 EKF 发布的 Odom -> Base 变换
+        // 注意：必须使用 stamp 回溯到图像采集时刻的里程计位姿，否则会因运动导致补偏量错误
+        geometry_msgs::msg::TransformStamped odom_to_base_msg;
+        odom_to_base_msg = tf_buffer_->lookupTransform(
+            "odom",           // 父坐标系
+            "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
+            stamp,            // 同步时间戳
+            rclcpp::Duration::from_milliseconds(100) // 等待缓冲区填充
+        );
 
-        // 3. 获取里程计位姿 (odom -> base_link)
-        // 查找 stamp 时刻位姿，同步 SLAM 延迟
-        auto odom_to_base_msg = tf_buffer_->lookupTransform("odom", "base_link", stamp, rclcpp::Duration::from_seconds(0.05));
         tf2::Transform odom_to_base;
         tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
 
-        // 4. 反算补偏量: T_map_odom = T_map_base * T_odom_base^-1
+        // 3. 反算补偏量 Map -> Odom
+        // 数学推导：
+        // T_map_base = T_map_odom * T_odom_base
+        // => T_map_odom = T_map_base * T_odom_base.inverse()
         tf2::Transform map_to_odom = map_to_base * odom_to_base.inverse();
 
-        // 5. 发布变换
+        // 4. 封装并发布变换
+        // 注意：这是 ROS 里唯一合法的消除漂移的方式
         geometry_msgs::msg::TransformStamped tf_msg;
         tf_msg.header.stamp = stamp;
-        tf_msg.header.frame_id = "map";
-        tf_msg.child_frame_id = "odom";
+        tf_msg.header.frame_id = "map";    // 父：全局唯一原点
+        tf_msg.child_frame_id = "odom";   // 子：里程计原点
         tf_msg.transform = tf2::toMsg(map_to_odom);
 
         tf_broadcaster_->sendTransform(tf_msg);
 
+        // --- DEBUG 打印 3: 循环计数 ---
+        static int pub_count = 0;
+        pub_count++;
+        if(pub_count % 10 == 0) {
+            RCLCPP_INFO(this->get_logger(), "Successfully published %d map->odm.", pub_count);
+        }
+
     } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "TF Sync Error: %s", ex.what());
+        // 使用 Throttle 避免 SLAM 频率过高时日志刷屏
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 1000, 
+            "Failed to publish map->odom: %s", ex.what());
     }
 }
 
-void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3f* v_world,const ORB_SLAM3::IMU::Point* lastPoint, const rclcpp::Time& stamp)
+void MonocularSlamNode::PublishOdm(const Eigen::Vector3d& p_ros,
+    const Eigen::Quaterniond& q_ros,
+    const Eigen::Matrix3f& R_cv,
+    const Eigen::Vector3f* v_world,
+    const ORB_SLAM3::IMU::Point* lastPoint,
+    const rclcpp::Time& stamp)
 {
-    // --- DEBUG 打印 1: 进入发布函数 ---
-    // 使用 THROTTLE 避免日志刷屏，每 1 秒输出一次
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "SLAM Tracking OK: Publishing Pose");
-
-    // 1. 获取外参 Tbc (Camera to Body)
-    // 建议：直接从 settings 获取对象，不要直接取地址
-    Sophus::SE3f* pTbc = nullptr;
-    // 检查 Tbc 是否有效 (不是单位阵且不为零)
-    // 注：Sophus 没有 isZero()，通常检查其 matrix().isIdentity()
-    if (m_bTbcLoaded) {
-        pTbc = &m_Tbc;
-    }
-    
-    Eigen::Matrix3f R_cv;
-    Eigen::Vector3f p_ros;
-    Eigen::Quaternionf q_ros;
-    Utility::ConvertSLAMPoseToROS(Tcw,R_cv,p_ros,q_ros,pTbc);
-
-    // 3. 检查平移向量 p_ros (是否包含非数字或无穷大)
-    if (p_ros.array().isNaN().any() || p_ros.array().isInf().any()) {
-        RCLCPP_ERROR(this->get_logger(), "有效性检查失败：p_ros 包含 NaN 或 Inf!");
-    }
-
-    // 4. 检查四元数 q_ros (确保已归一化，且不包含非法值)
-    if (std::abs(q_ros.norm() - 1.0f) > 0.1) {
-        // 如果模长偏离 1 太远，说明旋转矩阵转换出错
-        RCLCPP_ERROR(this->get_logger(), "有效性检查失败：四元数未归一化 (norm: %.2f)", q_ros.norm());
-    }
-
-    // 打印当前位姿 (ROS 坐标系)
-    RCLCPP_INFO(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
-                 p_ros.x(), p_ros.y(), p_ros.z(), q_ros.x(), q_ros.y(), q_ros.z(), q_ros.w());
-
-    // 5. 填充并发布 PoseStamped 消息(调试使用)
-    geometry_msgs::msg::PoseStamped pose_msg;
-    pose_msg.header.stamp = stamp;
-    pose_msg.header.frame_id = "map"; // 全局地图坐标系
-    
-    pose_msg.pose.position.x = p_ros.x();
-    pose_msg.pose.position.y = p_ros.y();
-    pose_msg.pose.position.z = p_ros.z();
-    
-    pose_msg.pose.orientation.x = q_ros.x();
-    pose_msg.pose.orientation.y = q_ros.y();
-    pose_msg.pose.orientation.z = q_ros.z();
-    pose_msg.pose.orientation.w = q_ros.w();
-
-    m_pose_publisher->publish(pose_msg);
-    // 发布map -> odm tf
-    this->PublishMap2OdomTF(p_ros.cast<double>(),q_ros.cast<double>(),stamp,m_bTbcLoaded);
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {
@@ -441,7 +499,7 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
         // 7.1 设置 Header
         odom_msg.header.stamp = stamp; 
         // 修改点：设为 "odom"。告诉 EKF 这是相对于里程计原点的位姿
-        odom_msg.header.frame_id = "odom"; 
+        odom_msg.header.frame_id = "base_link"; 
         // 被观测的对象依然是机器人本体
         odom_msg.child_frame_id = "base_link";
 
@@ -494,52 +552,27 @@ void MonocularSlamNode::PublishData(const Sophus::SE3f& Tcw,const Eigen::Vector3
             RCLCPP_INFO(this->get_logger(), "Successfully published %d odm.", odm_count);
         }
     }
-    
-
-    // --- DEBUG 打印 3: 循环计数 ---
-    static int pub_count = 0;
-    pub_count++;
-    if(pub_count % 10 == 0) {
-        RCLCPP_INFO(this->get_logger(), "Successfully published %d poses.", pub_count);
-    }
 }
 
-
-void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
+// 等价于map->base_link
+void MonocularSlamNode::PublishPos(
+    const Eigen::Vector3d& p_map_base,
+    const Eigen::Quaterniond& q_map_base,
+    const rclcpp::Time& stamp) 
 {
-    // 1. 获取所有地图点
-    std::vector<ORB_SLAM3::MapPoint*> vpMapPoints = m_SLAM->GetTrackedMapPoints(); // 只获取当前看到的点，或者使用 GetAllMapPoints()
-    if (vpMapPoints.empty()) return;
+    // 5. 填充并发布 PoseStamped 消息(调试使用)
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = stamp;
+    pose_msg.header.frame_id = "map"; // 全局地图坐标系
+    
+    pose_msg.pose.position.x = p_map_base.x();
+    pose_msg.pose.position.y = p_map_base.y();
+    pose_msg.pose.position.z = p_map_base.z();
+    
+    pose_msg.pose.orientation.x = q_map_base.x();
+    pose_msg.pose.orientation.y = q_map_base.y();
+    pose_msg.pose.orientation.z = q_map_base.z();
+    pose_msg.pose.orientation.w = q_map_base.w();
 
-    auto cloud_msg = sensor_msgs::msg::PointCloud2();
-    cloud_msg.header.stamp = stamp;
-    cloud_msg.header.frame_id = "map"; // 地图点是在 map 坐标系下的
-
-    sensor_msgs::PointCloud2Modifier modifier(cloud_msg);
-    modifier.setPointCloud2FieldsByString(1, "xyz");
-
-    // 预过滤有效点
-    std::vector<Eigen::Vector3f> valid_points;
-    for (auto pMP : vpMapPoints) {
-        if (pMP && !pMP->isBad()) {
-            // 使用与 Pose 统一的转换矩阵
-            // 可选：高度过滤（假设 z 是高度）
-            // if (pos_ros.z() < 0.05 || pos_ros.z() > 2.0) continue;
-            valid_points.push_back(m_R_vis_ros * pMP->GetWorldPos());
-        }
-    }
-
-    modifier.resize(valid_points.size());
-    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
-    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
-    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
-
-    for (const auto& pos : valid_points) {
-        *iter_x = pos.x();
-        *iter_y = pos.y();
-        *iter_z = pos.z();
-        ++iter_x; ++iter_y; ++iter_z;
-    }
-
-    m_cloud_publisher->publish(cloud_msg);
+    m_pose_publisher->publish(pose_msg);
 }
