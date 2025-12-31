@@ -46,7 +46,7 @@ public:
         
         // 2. 得到相机在世界系下的位姿 Twc (World -> Camera, OpenCV 轴向)
         Sophus::SE3f Twc = Tcw.inverse();
-        R_cv = Twc.rotationMatrix()
+        R_cv = Twc.rotationMatrix();
         if (Tbc && T_base_imu) {
             // --- 情况 A: IMU 模式 ---
             // 先算 Map -> IMU (ROS轴)，再算 Map -> Base (ROS轴)
@@ -59,8 +59,7 @@ public:
             Sophus::SE3f T_map_base = T_map_imu_ros * (T_base_imu->inverse());
             p_ros = T_map_base.translation();
             q_ros = Eigen::Quaternionf(T_map_base.rotationMatrix());
-        } 
-        else if (T_base_cam) {
+        } else if (T_base_cam) {
             // --- 情况 B: 纯视觉模式 (补全部分) ---
             // 逻辑：T_map_base = T_map_camera_optical * T_camera_optical_to_base
             // 注意：Twc 是 OpenCV 轴向，T_base_cam 通常也是定义为从 ROS Base 到 CV Cam

@@ -137,7 +137,7 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
         m_imu_buffer.erase(m_imu_buffer.begin(), last);
     }
 
-    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)vImuMeas.size(), (int)vFilteredImu.size());
+    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)m_imu_buffer.size(), (int)vFilteredImu.size());
     return vFilteredImu;
 }
 
@@ -425,7 +425,7 @@ void MonocularSlamNode::PublishMap2OdomTF(
             "odom",           // 父坐标系
             "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
             stamp,            // 同步时间戳
-            rclcpp::Duration::from_milliseconds(100) // 等待缓冲区填充
+            rclcpp::Duration(0, 100 * 1000 * 1000) // 100ms
         );
 
         tf2::Transform odom_to_base;
