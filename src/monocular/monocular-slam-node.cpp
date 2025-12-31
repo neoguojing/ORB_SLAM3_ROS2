@@ -224,7 +224,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 4. 检查状态并发布
     int state = m_SLAM->GetTrackingState();
-    double now = node->now().seconds();
+    double now = this->now().seconds();
     
     // --- DEBUG 打印 5: SLAM 结果 ---
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
