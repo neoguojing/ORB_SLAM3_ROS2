@@ -25,6 +25,7 @@
 #include "Tracking.h"
 
 #include "utility.hpp"
+#include <deque>
 
 
 class MonocularSlamNode : public rclcpp::Node
@@ -87,7 +88,8 @@ private:
     cv_bridge::CvImagePtr m_cvImPtr;
     // --- IMU 缓冲区与同步逻辑 ---
     std::mutex m_mutex_imu;
-    std::vector<ORB_SLAM3::IMU::Point> m_imu_buffer;
+    // std::vector<ORB_SLAM3::IMU::Point> m_imu_buffer;
+    std::deque<ORB_SLAM3::IMU::Point> m_imu_buffer;
     // 坐标系转换常量 (相机系 -> ROS 机器人系)
     // 根据 REP-103 标准进行轴映射
     Eigen::Matrix3f m_R_vis_ros;
