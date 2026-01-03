@@ -116,9 +116,9 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
         ));
 
         // 自动清理：只保留最近 5 秒的数据，确保后端线程随时能调取历史数据
-        while (!m_imu_buffer.empty() && m_imu_buffer.front().t < t_sec - 2.0) {
-            m_imu_buffer.pop_front();
-        }
+        // while (!m_imu_buffer.empty() && m_imu_buffer.front().t < t_sec - 2.0) {
+        //     m_imu_buffer.pop_front();
+        // }
     }
     // 4. 修正日志信息：打印加速度和角速度信息，而不是图像信息
     // 使用 THROTTLE 避免日志刷新过快影响性能（IMU 通常频率很高，如 200Hz+）
@@ -187,13 +187,13 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
 
     // 关键修正：我们需要保留 it 之前的那个点，作为下一次提取的起点（重叠一个点）
     // 或者至少要保证下次提取时，能连接上本次的结束点
-    // if (it != m_imu_buffer.begin()) {
-    //     // 删除已经处理过的点，但保留最后一个点，因为它的时间戳可能正好等于或最接近下一帧的起点
-    //     m_imu_buffer.erase(m_imu_buffer.begin(), std::prev(it));
-    // }
-    if (it != m_imu_buffer.end()) {
-        vFilteredImu.push_back(*it);
+    if (it != m_imu_buffer.begin()) {
+        // 删除已经处理过的点，但保留最后一个点，因为它的时间戳可能正好等于或最接近下一帧的起点
+        m_imu_buffer.erase(m_imu_buffer.begin(), std::prev(it));
     }
+    // if (it != m_imu_buffer.end()) {
+    //     vFilteredImu.push_back(*it);
+    // }
 
     RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)m_imu_buffer.size(), (int)vFilteredImu.size());
     return vFilteredImu;

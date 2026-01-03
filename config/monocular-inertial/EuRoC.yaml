@@ -78,7 +78,7 @@ IMU.AccWalk: 0.0001     # 缩小一点
 
 # IMU 采样频率
 # 必须与 URDF 中 <update_rate>100</update_rate> 一致
-IMU.Frequency: 200
+IMU.Frequency: 100
 
 #--------------------------------------------------------------------------------------------
 # ORB Parameters
