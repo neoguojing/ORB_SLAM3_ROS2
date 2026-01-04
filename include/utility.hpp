@@ -108,7 +108,6 @@ public:
             // ------------------------------------------------------------
             p_ros = T_map_base_ros.translation();
             q_ros = Eigen::Quaternionf(T_map_base_ros.rotationMatrix());
-            q_ros.normalize();
         } 
         else {
             // ====================================================
@@ -126,12 +125,10 @@ public:
             // 3. 输出“明确语义”的结果
             p_ros = p_cam_ros;
             q_ros = Eigen::Quaternionf(R_cam_ros);
-            q_ros.normalize();
             // ⚠️ 调用方必须清楚：
             //     此时 (p_ros, q_ros) 表示的是
             //     map → camera_optical
         }
-
         q_ros.normalize();
     }
 
