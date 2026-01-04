@@ -63,22 +63,73 @@ public:
             // --- 情况 B: 纯视觉模式 (补全部分) ---
             // 逻辑：T_map_base = T_map_camera_optical * T_camera_optical_to_base
             // 注意：Twc 是 OpenCV 轴向，T_base_cam 通常也是定义为从 ROS Base 到 CV Cam
-            
-            // 1. 在 OpenCV 空间计算 base_link 的位置
-            // T_map_base_cv = Twc * T_base_cam^-1
-            Sophus::SE3f T_map_base_cv = Twc * (T_base_cam->inverse());
+            // ------------------------------------------------------------
+            // Step 1: 将 SLAM 位姿从 OpenCV optical 轴
+            //         转换为 ROS camera_optical 语义
+            //
+            // 语义变化：
+            //   (map_cv → camera_cv)
+            //        ↓ 轴语义转换
+            //   (map_ros → camera_optical)
+            // ------------------------------------------------------------
+            Eigen::Vector3f p_cam_ros =
+                m_R_vis_ros * Twc.translation();
 
-            // 2. 转换到 ROS 轴向空间
-            // 这一步非常关键：它将 SLAM 定义的“前进方向”对齐到 ROS 定义的“前进方向”
-            p_ros = m_R_vis_ros * T_map_base_cv.translation();
-            Eigen::Matrix3f R_base_ros = m_R_vis_ros * T_map_base_cv.rotationMatrix() * m_R_vis_ros.transpose();
-            
-            q_ros = Eigen::Quaternionf(R_base_ros);
+            Eigen::Matrix3f R_cam_ros =
+                m_R_vis_ros * Twc.rotationMatrix() * m_R_vis_ros.transpose();
+
+            Sophus::SE3f T_map_cam_ros(R_cam_ros, p_cam_ros);
+
+            // ------------------------------------------------------------
+            // Step 2: ROS 语义下的相机 → base_link 外参
+            //
+            // 已知：
+            //   T_base_cam : base_link → camera_optical (ROS)
+            //
+            // 需要：
+            //   T_cam_base : camera_optical → base_link (ROS)
+            // ------------------------------------------------------------
+            Sophus::SE3f T_cam_base_ros = T_base_cam->inverse();
+
+            // ------------------------------------------------------------
+            // Step 3: 合法拼接（同一 ROS 语义空间）
+            //
+            //   T_map_base =
+            //       T_map_cam_ros * T_cam_base_ros
+            //
+            // 语义：
+            //   map_ros → base_link
+            // ------------------------------------------------------------
+            Sophus::SE3f T_map_base_ros =
+                T_map_cam_ros * T_cam_base_ros;
+
+            // ------------------------------------------------------------
+            // Step 4: 输出
+            // ------------------------------------------------------------
+            p_ros = T_map_base_ros.translation();
+            q_ros = Eigen::Quaternionf(T_map_base_ros.rotationMatrix());
+            q_ros.normalize();
         } 
         else {
-            // --- 情况 C: 无外参，退化输出 ---
-            p_ros = Twc.translation();
-            q_ros = Eigen::Quaternionf(Twc.rotationMatrix());
+            // ====================================================
+            // 情况 C（安全退化）：
+            //   输出 map → camera_optical（ROS 语义）
+            //   而不是 map → base_link
+            // ====================================================
+            // 2. OpenCV optical → ROS camera_optical 语义
+            Eigen::Vector3f p_cam_ros =
+                m_R_vis_ros * Twc.translation();
+
+            Eigen::Matrix3f R_cam_ros =
+                m_R_vis_ros * Twc.rotationMatrix() * m_R_vis_ros.transpose();
+
+            // 3. 输出“明确语义”的结果
+            p_ros = p_cam_ros;
+            q_ros = Eigen::Quaternionf(R_cam_ros);
+            q_ros.normalize();
+            // ⚠️ 调用方必须清楚：
+            //     此时 (p_ros, q_ros) 表示的是
+            //     map → camera_optical
         }
 
         q_ros.normalize();
