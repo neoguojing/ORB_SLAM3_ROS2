@@ -147,19 +147,28 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
 }
 
 // 线性插值辅助函数
-static ORB_SLAM3::IMU::Point InterpImuPoint(const ORB_SLAM3::IMU::Point& a, const ORB_SLAM3::IMU::Point& b, double t)
+static ORB_SLAM3::IMU::Point InterpImuPoint(const ORB_SLAM3::IMU::Point& p0,
+               const ORB_SLAM3::IMU::Point& p1,
+               double t)
 {
-    double dt = b.t - a.t;
-    if (dt <= 0) return a;
-    double alpha = (t - a.t) / dt;
-    auto lerp = [&](float va, float vb) {
-        return static_cast<float>( (1.0 - alpha) * va + alpha * vb );
-    };
-    return ORB_SLAM3::IMU::Point(
-        lerp(a.ax), lerp(a.ay), lerp(a.az),
-        lerp(a.gx), lerp(a.gy), lerp(a.gz),
-        t
-    );
+    const double dt = p1.t - p0.t;
+    if (dt <= 0.0) {
+        // 时间异常，直接返回前一个点
+        return ORB_SLAM3::IMU::Point(p0.a, p0.w, t);
+    }
+
+    const double alpha = (t - p0.t) / dt;
+
+    // 线性插值（Eigen 向量）
+    Eigen::Vector3f acc =
+        static_cast<float>(1.0 - alpha) * p0.a +
+        static_cast<float>(alpha)       * p1.a;
+
+    Eigen::Vector3f gyro =
+        static_cast<float>(1.0 - alpha) * p0.w +
+        static_cast<float>(alpha)       * p1.w;
+
+    return ORB_SLAM3::IMU::Point(acc, gyro, t);
 }
 
 /**
