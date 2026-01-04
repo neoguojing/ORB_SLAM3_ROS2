@@ -455,6 +455,11 @@ void MonocularSlamNode::PublishMapPoints(const rclcpp::Time& stamp)
  * @throws std::runtime_error 如果外参缺失，强制抛出异常，防止静默失败
  */
 Sophus::SE3f MonocularSlamNode::GetStaticTransformAsSophus(const std::string& target_frame) {
+
+    if (static_tf_cache_.count(target_frame)) {
+        return static_tf_cache_.at(target_frame);
+    }
+
     try {
         // 使用 TimePointZero 获取最新静态变换，不引入时间戳抖动
         auto msg = tf_buffer_->lookupTransform("base_link", target_frame, tf2::TimePointZero);
@@ -471,7 +476,17 @@ Sophus::SE3f MonocularSlamNode::GetStaticTransformAsSophus(const std::string& ta
             msg.transform.translation.y,
             msg.transform.translation.z);
 
-        return Sophus::SE3f(q, t);
+        // 2. 打印获取到的关系 (只在第一次获取时打印)
+        RCLCPP_INFO(this->get_logger(), "Successfully cached static TF [base_link -> %s]:", target_frame.c_str());
+        RCLCPP_INFO(this->get_logger(), " - Translation: [%.3f, %.3f, %.3f]", t.x(), t.y(), t.z());
+        RCLCPP_INFO(this->get_logger(), " - Rotation (Euler RPY): [%.3f, %.3f, %.3f]", 
+                    q.toRotationMatrix().eulerAngles(0, 1, 2).cast<float>().x(),
+                    q.toRotationMatrix().eulerAngles(0, 1, 2).cast<float>().y(),
+                    q.toRotationMatrix().eulerAngles(0, 1, 2).cast<float>().z());
+        Sophus::SE3f T_base_target(q, t);
+        // 3. 存入缓存
+        static_tf_cache_[target_frame] = T_base_target;
+        return T_base_target;
     } catch (const tf2::TransformException& ex) {
         // 1. 记录 FATAL 级别日志（比 ERROR 更严重）
         RCLCPP_FATAL(
@@ -566,6 +581,19 @@ void MonocularSlamNode::PublishMap2OdomTF(
             "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
             stamp,            // 同步时间戳
             rclcpp::Duration(0, 100 * 1000 * 1000) // 100ms
+        );
+
+        // 获取引用以便打印
+        auto& t = odom_to_base_msg.transform.translation;
+        auto& r = odom_to_base_msg.transform.rotation;
+        // 使用 THROTTLE 宏实现每 2000 毫秒（2秒）打印一次
+        // 参数: (日志记录器, 时钟, 间隔毫秒数, 格式化字符串, ...)
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), 
+            *this->get_clock(), 
+            2000, 
+            "Odom -> Base (Buffered): T[%.2f, %.2f, %.2f] Q[%.2f, %.2f, %.2f, %.2f]",
+            t.x, t.y, t.z, r.x, r.y, r.z, r.w
         );
 
         tf2::Transform odom_to_base;

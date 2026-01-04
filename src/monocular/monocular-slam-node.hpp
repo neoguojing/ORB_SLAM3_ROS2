@@ -100,6 +100,7 @@ private:
     // 存储上一次 SLAM 跟踪的纯耗时（单位：秒）
     double m_last_elapsed = 0.0;
 
+    std::unordered_map<std::string, Sophus::SE3f> static_tf_cache_;
     // --- IMU 缓冲区与同步逻辑 ---
     Sophus::SE3f m_Tbc;
     bool m_bTbcLoaded = false;
