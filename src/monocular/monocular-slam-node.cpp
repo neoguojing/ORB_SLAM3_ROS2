@@ -71,64 +71,171 @@ MonocularSlamNode::~MonocularSlamNode()
 }
 
 void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
-{   
-    // 1. 增强型无效数值检查 (包含 NaN 和 Inf)
-    // 校验所有 6 个分量
-    if (!std::isfinite(msg->linear_acceleration.x) || !std::isfinite(msg->linear_acceleration.y) || !std::isfinite(msg->linear_acceleration.z) ||
-        !std::isfinite(msg->angular_velocity.x)    || !std::isfinite(msg->angular_velocity.y)    || !std::isfinite(msg->angular_velocity.z)) {
+{
+    // 0. 基本空指针/时间检查（防御式编程）
+    if (!msg) return;
+
+    rclcpp::Time header_time(msg->header.stamp);
+    int64_t current_ns = header_time.nanoseconds();
+    double t_sec = static_cast<double>(current_ns) * 1e-9; // 精确转换
+
+    // 1. 值有效性检查：包含 NaN/Inf。对加速度、角速度和四元数都做检查
+    auto isFinite6 = [&](const sensor_msgs::msg::Imu::SharedPtr& m) {
+        return std::isfinite(m->linear_acceleration.x) && std::isfinite(m->linear_acceleration.y) && std::isfinite(m->linear_acceleration.z)
+            && std::isfinite(m->angular_velocity.x) && std::isfinite(m->angular_velocity.y) && std::isfinite(m->angular_velocity.z)
+            && std::isfinite(m->orientation.x) && std::isfinite(m->orientation.y) && std::isfinite(m->orientation.z) && std::isfinite(m->orientation.w);
+    };
+    if (!isFinite6(msg)) {
         RCLCPP_ERROR(this->get_logger(), "IMU 数据包含无效数值 (NaN/Inf)，已跳过！");
         return;
     }
-    
-    // 2. 坐标系转换 (非常重要！)
-    // 如果你的 IMU 安装方向和相机坐标系不一致，可能需要在这里做轴交换
-    // 例如：float ax = msg->linear_acceleration.x; ...
 
-    rclcpp::Time current_time(msg->header.stamp);
-    
-    // 1. 使用 int64_t 进行去重，这是绝对精确的，不存在精度丢失
-    int64_t current_ns = current_time.nanoseconds();
-    double t_sec = current_time.seconds();
-
-    {
-        std::lock_guard<std::mutex> lock(m_mutex_imu);
-        
-        if (!m_imu_buffer.empty()) {
-            // 使用原始纳秒进行判断
-            static int64_t last_ns = 0;
-            if (current_ns <= last_ns) {
-                return; // 物理上的重复或倒流，丢弃
-            }
-            
-            // 2. 额外保险：防止 double 舍入后导致的 t_sec 相等
-            if (t_sec <= m_imu_buffer.back().t) {
-                // 如果 double 转换后看起来相等，给它补一个极小的增量（1微秒）
-                // 这样既保证了递增，又避免了 dt=0
-                t_sec = m_imu_buffer.back().t + 1e-6; 
-            }
-            last_ns = current_ns;
-        }
-
-        m_imu_buffer.push_back(ORB_SLAM3::IMU::Point(
-            (float)msg->linear_acceleration.x, (float)msg->linear_acceleration.y, (float)msg->linear_acceleration.z,
-            (float)msg->angular_velocity.x,    (float)msg->angular_velocity.y,    (float)msg->angular_velocity.z,
-            t_sec
-        ));
-
-        // 自动清理：只保留最近 5 秒的数据，确保后端线程随时能调取历史数据
-        // while (!m_imu_buffer.empty() && m_imu_buffer.front().t < t_sec - 2.0) {
-        //     m_imu_buffer.pop_front();
-        // }
+    // 可选：极端值保护（防止传感器短路产生的巨大值）
+    const double accel_magnitude = std::sqrt(
+        msg->linear_acceleration.x * msg->linear_acceleration.x +
+        msg->linear_acceleration.y * msg->linear_acceleration.y +
+        msg->linear_acceleration.z * msg->linear_acceleration.z);
+    if (accel_magnitude > m_max_accel_magnitude_) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+            "异常加速度 magnitude=%.2f > %.1f. 丢弃该条 IMU.", accel_magnitude, m_max_accel_magnitude_);
+        return;
     }
-    // 4. 修正日志信息：打印加速度和角速度信息，而不是图像信息
-    // 使用 THROTTLE 避免日志刷新过快影响性能（IMU 通常频率很高，如 200Hz+）
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
-        "收到 IMU 数据! 时间戳: %.3f, 加速度: [%.2f, %.2f, %.2f]", 
-        t_sec, 
-        msg->linear_acceleration.x, 
-        msg->linear_acceleration.y, 
-        msg->linear_acceleration.z);
+
+    std::lock_guard<std::mutex> lock(m_mutex_imu);
+
+    // 2. 单调性与去重：使用纳秒整数判断（精确）
+    if (m_last_imu_ns_ >= 0) {
+        if (current_ns <= m_last_imu_ns_) {
+            // 小量抖动允许（例如 1 微秒以内）——但一般直接丢弃或调节时间
+            if (current_ns == m_last_imu_ns_) {
+                // 完全重复时间戳，通常丢弃
+                RCLCPP_DEBUG(this->get_logger(), "收到重复时间戳 IMU（ns=%ld），丢弃。", (long)current_ns);
+                return;
+            } else {
+                // 时间倒流（例如设备重置或 NTP 回拨）
+                RCLCPP_WARN(this->get_logger(), "IMU 时间倒流或跳变（now=%ld, last=%ld），已丢弃。", (long)current_ns, (long)m_last_imu_ns_);
+                return;
+            }
+        }
+    }
+
+    // 3. 推入缓冲（保持 t 使用 double，但来自整数转换）
+    ORB_SLAM3::IMU::Point p(
+        static_cast<float>(msg->linear_acceleration.x),
+        static_cast<float>(msg->linear_acceleration.y),
+        static_cast<float>(msg->linear_acceleration.z),
+        static_cast<float>(msg->angular_velocity.x),
+        static_cast<float>(msg->angular_velocity.y),
+        static_cast<float>(msg->angular_velocity.z),
+        t_sec
+    );
+    m_imu_buffer.push_back(p);
+    m_last_imu_ns_ = current_ns;
+
+    // 4. 裁剪缓冲：保留最近 m_max_buffer_seconds_；注意保留最后一个点以便重叠
+    while (m_imu_buffer.size() > 1 && m_imu_buffer.front().t < (t_sec - m_max_buffer_seconds_)) {
+        m_imu_buffer.pop_front();
+    }
+
+    // 5. 日志（节流）
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "收到 IMU 时间: %.6f, acc=[%.3f,%.3f,%.3f], gyro=[%.3f,%.3f,%.3f], buffer_size=%zu",
+        t_sec,
+        msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z,
+        msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z,
+        m_imu_buffer.size());
 }
+
+// 线性插值辅助函数
+static ORB_SLAM3::IMU::Point InterpImuPoint(const ORB_SLAM3::IMU::Point& a, const ORB_SLAM3::IMU::Point& b, double t)
+{
+    double dt = b.t - a.t;
+    if (dt <= 0) return a;
+    double alpha = (t - a.t) / dt;
+    auto lerp = [&](float va, float vb) {
+        return static_cast<float>( (1.0 - alpha) * va + alpha * vb );
+    };
+    return ORB_SLAM3::IMU::Point(
+        lerp(a.ax), lerp(a.ay), lerp(a.az),
+        lerp(a.gx), lerp(a.gy), lerp(a.gz),
+        t
+    );
+}
+
+/**
+ * @brief 提取并对齐 IMU 数据
+ * @return 过滤后的 IMU 测量矢量。如果数据未就绪则返回空。
+ */
+std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image)
+{
+    std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
+    std::lock_guard<std::mutex> lock(m_mutex_imu);
+
+    if (m_imu_buffer.empty())
+        return {};
+
+    // 1. IMU 是否滞后于图像
+    if (m_imu_buffer.back().t < t_image - 0.01) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 500,
+            "IMU 数据滞后! 最新 IMU: %.6f, 图像: %.6f, Δ=%.3f s",
+            m_imu_buffer.back().t, t_image,
+            t_image - m_imu_buffer.back().t);
+        return {};
+    }
+
+    // 2. 找到第一个 t > t_image 的 IMU
+    auto it = std::upper_bound(
+        m_imu_buffer.begin(), m_imu_buffer.end(),
+        t_image,
+        [](double t, const ORB_SLAM3::IMU::Point& p) {
+            return t < p.t;
+        });
+
+    // 极端情况：首个 IMU 就晚于图像
+    if (it == m_imu_buffer.begin()) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "SyncImuData: first IMU t=%.6f > image t=%.6f",
+            m_imu_buffer.front().t, t_image);
+        return {};
+    }
+
+    // 3. 收集 [begin, it) 的真实 IMU
+    double last_t = -1.0;
+    for (auto iter = m_imu_buffer.begin(); iter != it; ++iter) {
+        if (last_t > 0) {
+            double dt = iter->t - last_t;
+            if (dt > m_max_imu_dt_) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "IMU time gap detected: dt=%.4f s (>%.4f)",
+                    dt, m_max_imu_dt_);
+            }
+        }
+        vFilteredImu.push_back(*iter);
+        last_t = iter->t;
+    }
+
+    // 4. 插值生成 t_image 对齐点（不覆盖真实 IMU）
+    auto prev_it = std::prev(it);
+    if (it != m_imu_buffer.end()) {
+        ORB_SLAM3::IMU::Point interp =
+            InterpImuPoint(*prev_it, *it, t_image);
+        vFilteredImu.push_back(interp);
+    }
+
+    // 5. 裁剪 buffer：保留 prev_it 作为重叠点
+    m_imu_buffer.erase(m_imu_buffer.begin(), prev_it);
+
+    RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "SyncImuData: return %zu IMU, buffer left %zu",
+        vFilteredImu.size(), m_imu_buffer.size());
+
+    return vFilteredImu;
+}
+
 
 void MonocularSlamNode::GrabCompressedImage(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     try {
@@ -148,55 +255,6 @@ void MonocularSlamNode::GrabImage(const sensor_msgs::msg::Image::SharedPtr msg){
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     }
-}
-
-/**
- * @brief 提取并对齐 IMU 数据
- * @return 过滤后的 IMU 测量矢量。如果数据未就绪则返回空。
- */
-std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image)
-{
-    std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
-    std::lock_guard<std::mutex> lock(m_mutex_imu);
-
-    if (m_imu_buffer.empty()) {
-        return {};
-    }
-
-    if (m_imu_buffer.back().t < t_image - 0.01) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-            "IMU 数据滞后! 最新 IMU 时间: %.6f, 图像时间: %.6f, 差值: %.3f s",
-            m_imu_buffer.back().t, t_image, t_image - m_imu_buffer.back().t);
-        return {};
-    }
-
-    double last_imu_t = -1.0;
-    constexpr double MAX_IMU_DT = 0.02; // 50Hz
-
-    auto it = m_imu_buffer.begin();
-    for (; it != m_imu_buffer.end() && it->t <= t_image; ++it) {
-        if (last_imu_t > 0 && (it->t - last_imu_t) > MAX_IMU_DT) {
-            RCLCPP_WARN(this->get_logger(),
-                        "IMU time gap detected! dt = %.3f s",
-                        it->t - last_imu_t);
-        }
-
-        vFilteredImu.push_back(*it);
-        last_imu_t = it->t;
-    }
-
-    // 关键修正：我们需要保留 it 之前的那个点，作为下一次提取的起点（重叠一个点）
-    // 或者至少要保证下次提取时，能连接上本次的结束点
-    if (it != m_imu_buffer.begin()) {
-        // 删除已经处理过的点，但保留最后一个点，因为它的时间戳可能正好等于或最接近下一帧的起点
-        m_imu_buffer.erase(m_imu_buffer.begin(), std::prev(it));
-    }
-    // if (it != m_imu_buffer.end()) {
-    //     vFilteredImu.push_back(*it);
-    // }
-
-    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前IMU个数: %d，合法IMU个数: %d", (int)m_imu_buffer.size(), (int)vFilteredImu.size());
-    return vFilteredImu;
 }
 
 /**
