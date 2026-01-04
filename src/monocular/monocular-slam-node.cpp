@@ -315,7 +315,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 {
     double t_image = Utility::StampToSec(stamp);
     // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
         "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
         t_image, im.cols, im.rows);
 
@@ -352,7 +352,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 获取当前帧的特征点数量（需要包含对应的头文件）
     int nFeatures = m_SLAM->GetTrackedKeyPointsUn().size(); 
-    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 1000, "当前帧提取到的特征点数: %d", nFeatures);
+    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 3000, "当前帧提取到的特征点数: %d", nFeatures);
     
     // 4. 检查状态并发布
     int state = m_SLAM->GetTrackingState();
@@ -532,7 +532,7 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
         }
 
         // 打印当前位姿 (ROS 坐标系)
-        RCLCPP_INFO(this->get_logger(), "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
+         RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
                     p_base_ros.x(), p_base_ros.y(), p_base_ros.z(), q_base_ros.x(), q_base_ros.y(), q_base_ros.z(), q_base_ros.w());
 
         // 发布 map -> baselink
