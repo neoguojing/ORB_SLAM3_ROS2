@@ -576,12 +576,21 @@ void MonocularSlamNode::PublishMap2OdomTF(
         // 2. 获取 EKF 发布的 Odom -> Base 变换
         // 注意：必须使用 stamp 回溯到图像采集时刻的里程计位姿，否则会因运动导致补偏量错误
         geometry_msgs::msg::TransformStamped odom_to_base_msg;
-        odom_to_base_msg = tf_buffer_->lookupTransform(
-            "odom",           // 父坐标系
-            "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
-            stamp,            // 同步时间戳
-            rclcpp::Duration(0, 100 * 1000 * 1000) // 100ms
-        );
+        try {
+            odom_to_base_msg = tf_buffer_->lookupTransform(
+                "odom",           // 父坐标系
+                "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
+                stamp,            // 同步时间戳
+                rclcpp::Duration(0, 100 * 1000 * 1000) // 100ms
+            );
+        } catch (const tf2::TransformException & ex) {
+            // 【核心改动】获取失败，打印警告并直接返回，不执行后面的反算逻辑
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "无法获取 odom->base 变换，跳过本帧位姿反算: %s", ex.what()
+            );
+            return; // ⬅️ 必须直接返回！
+        }
 
         // 获取引用以便打印
         auto& t = odom_to_base_msg.transform.translation;
