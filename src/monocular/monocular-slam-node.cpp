@@ -558,86 +558,114 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
  * @param q_map_base SLAM计算出的 base_link 在 map 系下的旋转
  * @param stamp      当前图像帧的时间戳
  */
+/**
+ * @brief 发布 map -> odom 变换，用于消除里程计漂移（Nav2 / EKF 友好版）
+ * @param p_map_base  SLAM 计算得到的 base_link 在 map 坐标系下的位置
+ * @param q_map_base  SLAM 计算得到的 base_link 在 map 坐标系下的姿态
+ * @param stamp       图像帧对应的时间戳（必须与 SLAM 位姿同步）
+ */
 void MonocularSlamNode::PublishMap2OdomTF(
     const Eigen::Vector3d& p_map_base,
     const Eigen::Quaterniond& q_map_base,
-    const rclcpp::Time& stamp) 
+    const rclcpp::Time& stamp)
 {
+    // ===============================
+    // 1. SLAM: Map -> Base（压平成 2D）
+    // ===============================
+
+    // 从 SLAM 四元数中只提取 yaw
+    Eigen::Matrix3d R_map_base = q_map_base.toRotationMatrix();
+    double slam_yaw = std::atan2(R_map_base(1, 0), R_map_base(0, 0));
+
+    tf2::Transform map_to_base_2d;
+    map_to_base_2d.setOrigin(tf2::Vector3(
+        p_map_base.x(),
+        p_map_base.y(),
+        0.0                    // ⭐ 强制 z = 0
+    ));
+
+    tf2::Quaternion q_slam_yaw;
+    q_slam_yaw.setRPY(0.0, 0.0, slam_yaw);  // ⭐ 只保留 yaw
+    q_slam_yaw.normalize();
+    map_to_base_2d.setRotation(q_slam_yaw);
+
+    // ===============================
+    // 2. EKF: 查询 Odom -> Base_footprint
+    // ===============================
+    geometry_msgs::msg::TransformStamped odom_to_base_msg;
     try {
-        // 1. 封装 SLAM 输出的 Map -> Base 位姿
-        tf2::Transform map_to_base;
-        map_to_base.setOrigin(tf2::Vector3(p_map_base.x(), p_map_base.y(), p_map_base.z()));
-        
-        // 再次确保归一化，防止 tf2 内部矩阵检查失败
-        tf2::Quaternion q_tf(q_map_base.x(), q_map_base.y(), q_map_base.z(), q_map_base.w());
-        q_tf.normalize();
-        map_to_base.setRotation(q_tf);
-
-        // 2. 获取 EKF 发布的 Odom -> Base 变换
-        // 注意：必须使用 stamp 回溯到图像采集时刻的里程计位姿，否则会因运动导致补偏量错误
-        geometry_msgs::msg::TransformStamped odom_to_base_msg;
-        try {
-            odom_to_base_msg = tf_buffer_->lookupTransform(
-                "odom",           // 父坐标系
-                "base_link",      // 子坐标系 (或者是 base_footprint，取决于你的 EKF 配置)
-                stamp,            // 同步时间戳
-                rclcpp::Duration(0, 100 * 1000 * 1000) // 100ms
-            );
-        } catch (const tf2::TransformException & ex) {
-            // 【核心改动】获取失败，打印警告并直接返回，不执行后面的反算逻辑
-            RCLCPP_WARN_THROTTLE(
-                this->get_logger(), *this->get_clock(), 2000,
-                "无法获取 odom->base 变换，跳过本帧位姿反算: %s", ex.what()
-            );
-            return; // ⬅️ 必须直接返回！
-        }
-
-        // 获取引用以便打印
-        auto& t = odom_to_base_msg.transform.translation;
-        auto& r = odom_to_base_msg.transform.rotation;
-        // 使用 THROTTLE 宏实现每 2000 毫秒（2秒）打印一次
-        // 参数: (日志记录器, 时钟, 间隔毫秒数, 格式化字符串, ...)
-        RCLCPP_INFO_THROTTLE(
-            this->get_logger(), 
-            *this->get_clock(), 
-            2000, 
-            "Odom -> Base (Buffered): T[%.2f, %.2f, %.2f] Q[%.2f, %.2f, %.2f, %.2f]",
-            t.x, t.y, t.z, r.x, r.y, r.z, r.w
+        odom_to_base_msg = tf_buffer_->lookupTransform(
+            "odom",
+            "base_footprint",   // ⭐ 强烈推荐使用 base_footprint
+            stamp,
+            rclcpp::Duration(0, 100 * 1000 * 1000) // 100 ms
         );
-
-        tf2::Transform odom_to_base;
-        tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
-
-        // 3. 反算补偏量 Map -> Odom
-        // 数学推导：
-        // T_map_base = T_map_odom * T_odom_base
-        // => T_map_odom = T_map_base * T_odom_base.inverse()
-        tf2::Transform map_to_odom = map_to_base * odom_to_base.inverse();
-
-        // 4. 封装并发布变换
-        // 注意：这是 ROS 里唯一合法的消除漂移的方式
-        geometry_msgs::msg::TransformStamped tf_msg;
-        tf_msg.header.stamp = stamp;
-        tf_msg.header.frame_id = "map";    // 父：全局唯一原点
-        tf_msg.child_frame_id = "odom";   // 子：里程计原点
-        tf_msg.transform = tf2::toMsg(map_to_odom);
-
-        tf_broadcaster_->sendTransform(tf_msg);
-
-        // --- DEBUG 打印 3: 循环计数 ---
-        static int pub_count = 0;
-        pub_count++;
-        if(pub_count % 10 == 0) {
-            RCLCPP_INFO(this->get_logger(), "Successfully published %d map->odm.", pub_count);
-        }
-
     } catch (const tf2::TransformException& ex) {
-        // 使用 Throttle 避免 SLAM 频率过高时日志刷屏
         RCLCPP_WARN_THROTTLE(
-            this->get_logger(), *this->get_clock(), 1000, 
-            "Failed to publish map->odom: %s", ex.what());
+            this->get_logger(), *this->get_clock(), 2000,
+            "Failed to lookup odom->base_footprint, skip map->odom: %s",
+            ex.what()
+        );
+        return;
     }
+
+    tf2::Transform odom_to_base;
+    tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
+
+    // ===============================
+    // 2.1 EKF 位姿防御性压平（关键）
+    // ===============================
+    double o_roll, o_pitch, o_yaw;
+    tf2::Matrix3x3(odom_to_base.getRotation()).getRPY(
+        o_roll, o_pitch, o_yaw
+    );
+
+    tf2::Transform odom_to_base_2d;
+    odom_to_base_2d.setOrigin(tf2::Vector3(
+        odom_to_base.getOrigin().x(),
+        odom_to_base.getOrigin().y(),
+        0.0                    // ⭐ 再次强制 z = 0
+    ));
+
+    tf2::Quaternion q_odom_yaw;
+    q_odom_yaw.setRPY(0.0, 0.0, o_yaw);      // ⭐ 只保留 yaw
+    q_odom_yaw.normalize();
+    odom_to_base_2d.setRotation(q_odom_yaw);
+
+    // ===============================
+    // 3. 反算 Map -> Odom（2D ⨉ 2D）
+    //
+    // 数学关系：
+    //   T_map_base = T_map_odom * T_odom_base
+    //   => T_map_odom = T_map_base * T_odom_base⁻¹
+    // ===============================
+    tf2::Transform map_to_odom =
+        map_to_base_2d * odom_to_base_2d.inverse();
+
+    // ===============================
+    // 4. 发布 TF
+    // ===============================
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header.stamp = stamp;
+    tf_msg.header.frame_id = "map";
+    tf_msg.child_frame_id = "odom";
+    tf_msg.transform = tf2::toMsg(map_to_odom);
+
+    tf_broadcaster_->sendTransform(tf_msg);
+
+    // ===============================
+    // 5. 调试日志（节流）
+    // ===============================
+    RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Published map->odom (2D): "
+        "x=%.2f y=%.2f yaw=%.2f deg",
+        map_to_odom.getOrigin().x(),
+        map_to_odom.getOrigin().y(),
+        o_yaw * 180.0 / M_PI
+    );
 }
+
 
 void MonocularSlamNode::PublishOdm(
     const Eigen::Matrix3f& R_cv,
