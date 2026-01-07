@@ -34,7 +34,8 @@
 class MonocularSlamNode : public rclcpp::Node
 {
 public:
-    MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU,bool pubMap2Odom = false,bool pubOdom = true,bool pubMap2Base = false);
+    MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU,
+        bool pubMap2Odom = false,bool pubOdom = true,bool pubMap2Base = false,bool pubDebugImage=false,bool pubCloudPoint=true);
 
     ~MonocularSlamNode();
 
