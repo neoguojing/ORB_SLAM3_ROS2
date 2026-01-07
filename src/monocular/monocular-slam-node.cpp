@@ -11,11 +11,17 @@
 using std::placeholders::_1;
 
 
-MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU)
+MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU,
+    bool pubMap2Odom = false,bool pubOdom = true,bool pubMap2Base = false,bool pubDebugImage=false,bool pubCloudPoint=true)
 :   Node("ORB_SLAM3_ROS2")
 {
     m_SLAM = pSLAM;
     m_useIMU = useIMU;
+    m_pub_map_odom = pubMap2Odom;
+    m_pub_odom = pubOdom;
+    m_pub_pos = pubMap2Base;
+    m_pub_debug_image = pubDebugImage;
+    m_pub_cloud_point = pubCloudPoint;
     // --- 1. 初始化 TF 广播器 ---
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -369,10 +375,12 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
         // 核心数据分发 (之前讨论的 map->odom 发布就在这里面)
         this->HandleSlamOutput(Tcw, stamp, has_vel ? &v_world : nullptr, imu_ptr);
-        this->PublishMapPoints(stamp);
+        if (m_pub_cloud_point)
+            this->PublishMapPoints(stamp);
         // 每隔几帧发布一次点云，减轻树莓派压力
         if (m_frame_count++ % 5 == 0) {
-            this->PublishImageData(stamp);
+            if (m_pub_debug_image)
+                this->PublishImageData(stamp);
         }
     } else if (state == ORB_SLAM3::Tracking::LOST) {
         RCLCPP_WARN(this->get_logger(), "SLAM 跟踪丢失: %d！", state);
@@ -535,12 +543,15 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
          RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
                     p_base_ros.x(), p_base_ros.y(), p_base_ros.z(), q_base_ros.x(), q_base_ros.y(), q_base_ros.z(), q_base_ros.w());
 
-        // 发布 map -> baselink
-        this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
+        // 发布 map -> odm
+        if (m_pub_map_odom)
+            this->PublishMap2OdomTF(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         // 发布 odm
-        this->PublishOdm(R_cv,v_world,lastPoint, stamp);
+        if (m_pub_odom)
+            this->PublishOdm(R_cv,v_world,lastPoint, stamp);
         // 发布 pos
-        this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
+        if (m_pub_pos)
+            this->PublishPos(p_base_ros.cast<double>(), q_base_ros.cast<double>(), stamp);
         
 
 
