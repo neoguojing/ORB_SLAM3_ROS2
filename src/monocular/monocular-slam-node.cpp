@@ -12,7 +12,7 @@ using std::placeholders::_1;
 
 
 MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM, bool useIMU,
-    bool pubMap2Odom = false,bool pubOdom = true,bool pubMap2Base = false,bool pubDebugImage=false,bool pubCloudPoint=true)
+    bool pubMap2Odom,bool pubOdom,bool pubMap2Base,bool pubDebugImage,bool pubCloudPoint)
 :   Node("ORB_SLAM3_ROS2")
 {
     m_SLAM = pSLAM;
