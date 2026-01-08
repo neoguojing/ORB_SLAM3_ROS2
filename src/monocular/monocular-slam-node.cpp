@@ -714,7 +714,7 @@ void MonocularSlamNode::PublishOdm(
         // 7.1 设置 Header
         odom_msg.header.stamp = stamp; 
         // 修改点：设为 "odom"。告诉 EKF 这是相对于里程计原点的位姿
-        odom_msg.header.frame_id = "base_link"; 
+        odom_msg.header.frame_id = "odom"; 
         // 被观测的对象依然是机器人本体
         odom_msg.child_frame_id = "base_link";
 
