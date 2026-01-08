@@ -180,7 +180,7 @@ public:
           v_ros = m_R_vis_ros * v_temp;                           // OPENCV -> ROS
       }
 
-      RCLCPP_INFO(logger, "ConvertSLALinearVelocityToROS finished");
+      RCLCPP_DEBUG(logger, "ConvertSLALinearVelocityToROS finished");
   }
 
   // --- 打印 Eigen::Matrix3f (旋转矩阵) ---
@@ -188,7 +188,7 @@ public:
       auto logger = rclcpp::get_logger("utility_debug");
       RCLCPP_INFO(logger, "--- %s ---", name.c_str());
       for (int i = 0; i < 3; ++i) {
-          RCLCPP_INFO(logger, "  [%.4f, %.4f, %.4f]", 
+          RCLCPP_DEBUG(logger, "  [%.4f, %.4f, %.4f]", 
                       mat(i, 0), mat(i, 1), mat(i, 2));
       }
   }
@@ -201,13 +201,13 @@ public:
       // 转换为欧拉角 (Z-Y-X 顺序: yaw, pitch, roll) 方便人类理解
       Eigen::Vector3f euler = R.eulerAngles(2, 1, 0) * 180.0 / M_PI;
 
-      RCLCPP_INFO(logger, "==== %s ====", name.c_str());
-      RCLCPP_INFO(logger, "平移 (x, y, z): [%.4f, %.4f, %.4f]", t.x(), t.y(), t.z());
-      RCLCPP_INFO(logger, "旋转 (yaw, pitch, roll)°: [%.2f, %.2f, %.2f]", euler[0], euler[1], euler[2]);
+      RCLCPP_DEBUG(logger, "==== %s ====", name.c_str());
+      RCLCPP_DEBUG(logger, "平移 (x, y, z): [%.4f, %.4f, %.4f]", t.x(), t.y(), t.z());
+      RCLCPP_DEBUG(logger, "旋转 (yaw, pitch, roll)°: [%.2f, %.2f, %.2f]", euler[0], euler[1], euler[2]);
       
       // 打印原始 3x3 旋转矩阵
       for (int i = 0; i < 3; ++i) {
-          RCLCPP_INFO(logger, "R[%d]: [%.4f, %.4f, %.4f]", 
+          RCLCPP_DEBUG(logger, "R[%d]: [%.4f, %.4f, %.4f]", 
                       i, R(i, 0), R(i, 1), R(i, 2));
       }
   }
@@ -216,7 +216,7 @@ public:
  * @brief 打印 Eigen::Vector3f (专门用于速度、位置向量)
  */
   static void PrintVector3f(const std::string& name, const Eigen::Vector3f& vec) {
-      RCLCPP_INFO(rclcpp::get_logger("utility_debug"), "[DEBUG] %s: [X: %.4f, Y: %.4f, Z: %.4f] | 模长: %.4f", 
+      RCLCPP_DEBUG(rclcpp::get_logger("utility_debug"), "[DEBUG] %s: [X: %.4f, Y: %.4f, Z: %.4f] | 模长: %.4f", 
                   name.c_str(), vec.x(), vec.y(), vec.z(), vec.norm());
   }
 
@@ -237,20 +237,20 @@ public:
       Eigen::Vector3f acc = p->a;            // 线加速度
       Eigen::Vector3f gyr = p->w;            // 角速度
 
-      RCLCPP_INFO(logger, "==== [IMU Point: %s] ====", label.c_str());
-      RCLCPP_INFO(logger, "时间戳 (t): %.6f", ts);
-      
+      RCLCPP_DEBUG(logger, "==== [IMU Point: %s] ====", label.c_str());
+      RCLCPP_DEBUG(logger, "时间戳 (t): %.6f", ts);
+
       // 打印线加速度 (Acceleration)
       // 正常静止状态下，应该能看到一个轴接近 9.8 (重力)
-      RCLCPP_INFO(logger, "线加速度 a (x,y,z): [%.4f, %.4f, %.4f] m/s^2", 
+      RCLCPP_DEBUG(logger, "线加速度 a (x,y,z): [%.4f, %.4f, %.4f] m/s^2", 
                   acc.x(), acc.y(), acc.z());
       
       // 打印角速度 (Gyroscope)
       // 机器人静止时，这些值应接近 0
-      RCLCPP_INFO(logger, "角速度 w (x,y,z): [%.4f, %.4f, %.4f] rad/s", 
+      RCLCPP_DEBUG(logger, "角速度 w (x,y,z): [%.4f, %.4f, %.4f] rad/s", 
                   gyr.x(), gyr.y(), gyr.z());
       
-      RCLCPP_INFO(logger, "-----------------------------------------");
+      RCLCPP_DEBUG(logger, "-----------------------------------------");
   }
 
 };

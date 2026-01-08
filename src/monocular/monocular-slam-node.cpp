@@ -321,7 +321,7 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 {
     double t_image = Utility::StampToSec(stamp);
     // 如果这条不打印，说明是之前的 QoS 不匹配或网络包过大丢失问题
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
         "收到图像消息! 时间戳: %.3f, 宽度: %d, 高度: %d", 
         t_image, im.cols, im.rows);
 
@@ -358,11 +358,11 @@ void MonocularSlamNode::ProcessImage(const cv::Mat& im, const rclcpp::Time& stam
 
     // 获取当前帧的特征点数量（需要包含对应的头文件）
     int nFeatures = m_SLAM->GetTrackedKeyPointsUn().size(); 
-    RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(), 3000, "当前帧提取到的特征点数: %d", nFeatures);
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(),*this->get_clock(), 3000, "当前帧提取到的特征点数: %d", nFeatures);
     
     // 4. 检查状态并发布
     int state = m_SLAM->GetTrackingState();
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
         "SLAM 跟踪状态: %d (9=OK), 耗时: %.4f 秒", state, m_last_elapsed);
     
     double now = this->now().seconds();
@@ -540,7 +540,7 @@ void MonocularSlamNode::HandleSlamOutput(const Sophus::SE3f& Tcw, const rclcpp::
         }
 
         // 打印当前位姿 (ROS 坐标系)
-         RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
+         RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Pos: [x:%.2f, y:%.2f, z:%.2f] | Quat: [x:%.2f, y:%.2f, z:%.2f, w:%.2f]",
                     p_base_ros.x(), p_base_ros.y(), p_base_ros.z(), q_base_ros.x(), q_base_ros.y(), q_base_ros.z(), q_base_ros.w());
 
         // 发布 map -> odm
@@ -687,7 +687,7 @@ void MonocularSlamNode::PublishOdm(
 
     // --- 7. 发布 Odometry 消息 (作为 EKF 的视觉里程计输入) ---
     if (v_world) {
-        RCLCPP_INFO(this->get_logger(), "SLAM Tracking OK: Publishing Odometry...");
+        RCLCPP_DEBUG(this->get_logger(), "SLAM Tracking OK: Publishing Odometry...");
         Eigen::Vector3f v_body_ros;
         Utility::ConvertSLALinearVelocityToROS(v_world,R_cv,v_body_ros);
         // 2. 检查数值完整性 (防止 NaN 和 Inf)
@@ -705,7 +705,7 @@ void MonocularSlamNode::PublishOdm(
         }
 
         // 4. 打印调试信息 (Throttle 限制打印频率)
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
             "机体系速度 (ROS): [vx:%.3f, vy:%.3f, vz:%.3f] | 总速率: %.2f m/s",
             v_body_ros.x(), v_body_ros.y(), v_body_ros.z(), speed_norm);
 
@@ -764,7 +764,7 @@ void MonocularSlamNode::PublishOdm(
         static int odm_count = 0;
         odm_count++;
         if(odm_count % 10 == 0) {
-            RCLCPP_INFO(this->get_logger(), "Successfully published %d odm.", odm_count);
+            RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Successfully published %d odm.", odm_count);
         }
     }
 }
