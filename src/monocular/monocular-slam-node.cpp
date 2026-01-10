@@ -111,15 +111,20 @@ void MonocularSlamNode::GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
 
     // 2. 单调性与去重：使用纳秒整数判断（精确）
     if (m_last_imu_ns_ >= 0) {
-        if (current_ns <= m_last_imu_ns_) {
-            // 小量抖动允许（例如 1 微秒以内）——但一般直接丢弃或调节时间
-            if (current_ns == m_last_imu_ns_) {
-                // 完全重复时间戳，通常丢弃
-                RCLCPP_DEBUG(this->get_logger(), "收到重复时间戳 IMU（ns=%ld），丢弃。", (long)current_ns);
-                return;
+        int64_t diff = current_ns - m_last_imu_ns_;
+        if (diff <= 0) {
+            if (diff < -1000000000LL) { // 严重倒流（ > 1s）
+                RCLCPP_WARN(this->get_logger(), "检测到严重时间跳变，重置 IMU 状态。Old: %ld, New: %ld", m_last_imu_ns_, current_ns);
+                
+                // A. 清空旧的、基于错误时间轴的缓存
+                m_imu_buffer.clear();
+                
+                // B. 关键：必须更新时间戳基准，否则下一帧还会判定为倒流
+                m_last_imu_ns_ = current_ns; 
+                
+                // C. 此时不应该 return，而是让流程继续往下走，把这一帧 push 到 buffer 里
             } else {
-                // 时间倒流（例如设备重置或 NTP 回拨）
-                RCLCPP_WARN(this->get_logger(), "IMU 时间倒流或跳变（now=%ld, last=%ld），已丢弃。", (long)current_ns, (long)m_last_imu_ns_);
+                // 轻微重复或抖动，直接丢弃
                 return;
             }
         }
