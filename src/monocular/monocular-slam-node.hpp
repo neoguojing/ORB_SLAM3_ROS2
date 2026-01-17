@@ -111,7 +111,7 @@ private:
     int64_t m_last_imu_ns_ = -1;              // 上一个接收的 IMU 的 nanoseconds（用于去重 & 单调性）
     double m_max_buffer_seconds_ = 5.0;       // 缓冲最大保留秒数
     double m_min_time_increment_ = 1e-6;      // 最小时间增量，避免 dt==0
-    double m_max_imu_dt_ = 0.02;              // 允许的最大 IMU 间隔 (s)（用于 gap 警告）
+    double m_max_imu_dt_ = 0.05;              // 允许的最大 IMU 间隔 (s)（用于 gap 警告）
     double m_max_accel_magnitude_ = 200.0;    // 保护阈值（可选）
 
     // 发布控制

@@ -200,11 +200,11 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
     std::vector<ORB_SLAM3::IMU::Point> vFilteredImu;
     std::lock_guard<std::mutex> lock(m_mutex_imu);
 
-    if (m_imu_buffer.empty())
+    if (m_imu_buffer.size() < 100)
         return {};
 
     // 1. IMU 是否滞后于图像
-    if (m_imu_buffer.back().t < t_image - 0.01) {
+    if (m_imu_buffer.back().t < t_image - m_max_imu_dt_) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 500,
             "IMU 数据滞后! 最新 IMU: %.6f, 图像: %.6f, Δ=%.3f s",
@@ -255,7 +255,7 @@ std::vector<ORB_SLAM3::IMU::Point> MonocularSlamNode::SyncImuData(double t_image
     }
 
     // 5. 裁剪 buffer：保留 prev_it 作为重叠点
-    m_imu_buffer.erase(m_imu_buffer.begin(), prev_it);
+    // m_imu_buffer.erase(m_imu_buffer.begin(), prev_it);
 
     RCLCPP_DEBUG_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
@@ -672,13 +672,14 @@ void MonocularSlamNode::PublishMap2OdomTF(
     // ===============================
     // 5. 调试日志（节流）
     // ===============================
-    RCLCPP_DEBUG_THROTTLE(
+    RCLCPP_INFO_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
         "Published map->odom (2D): "
-        "x=%.2f y=%.2f yaw=%.2f deg",
+        "x=%.2f y=%.2f yaw=%.2f deg 时间戳: %.3f",
         map_to_odom.getOrigin().x(),
         map_to_odom.getOrigin().y(),
-        o_yaw * 180.0 / M_PI
+        o_yaw * 180.0 / M_PI,
+        stamp.seconds()
     );
 }
 

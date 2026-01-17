@@ -27,7 +27,13 @@ int main(int argc, char **argv)
     auto node = std::make_shared<MonocularSlamNode>(&SLAM, true);
     std::cout << "============================ " << std::endl;\
 
-    rclcpp::spin(node);
+    // rclcpp::spin(node);
+    // rclcpp::shutdown();
+
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();  // ← 现在 GrabImage 和 GrabImu 可以并发！
+
     rclcpp::shutdown();
 
     return 0;
